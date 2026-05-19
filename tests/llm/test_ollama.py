@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import pytest
 
 from banna_agent.llm.base import ContentBlock, Message
 from banna_agent.llm.ollama import OllamaClient, _messages_to_ollama

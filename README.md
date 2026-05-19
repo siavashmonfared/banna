@@ -199,7 +199,7 @@ Diagnosed from a full GAIA validation run on `gpt-5-nano`. Each fix lands as a s
 
 ## GAIA validation results
 
-> The fixes are landed and tested (780 tests passing in the public build). A full GAIA post-fix re-run on `gpt-5-nano` is in progress and the numbers below will be populated from `docs/evals/gaia_c1_c6_report.md` when it completes.
+> The fixes are landed and tested (778 tests passing in the public build). A full GAIA post-fix re-run on `gpt-5-nano` is in progress and the numbers below will be populated from `docs/evals/gaia_c1_c6_report.md` when it completes.
 
 | Run | Provider · model | Policy | Set | Accuracy | Notes |
 |-----|------------------|--------|-----|----------|-------|
@@ -230,7 +230,7 @@ Tests live in `tests/` and are organized to mirror `src/`. Run them with:
 pytest -q
 ```
 
-Current status: **780 passed, 0 failed** on this public branch (no external substrate dependencies).
+Current status: **778 passed, 3 skipped, 0 failed** on this public branch (skips are optional `chromadb` backend + tool-conformance tests that need real API keys).
 
 ## Limitations
 

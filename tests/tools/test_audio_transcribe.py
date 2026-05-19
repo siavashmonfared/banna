@@ -5,7 +5,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import pytest
 
 from banna_agent.tools.audio_transcribe import make_transcribe_tool
 

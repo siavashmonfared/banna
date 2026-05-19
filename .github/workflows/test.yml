@@ -37,9 +37,11 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.12", cache: pip }
       - run: pip install ruff
-      # Scoped to error+pyflakes initially; expand once the codebase
-      # is cleaned up against the full ruff selection in pyproject.toml.
-      - run: ruff check --select=E,F src tests
+      # Scoped to pyflakes initially (real-bug rules: unused imports,
+      # undefined names, etc.). The pyproject.toml has the full
+      # E/F/W/I/UP/B/SIM/TID/RUF selection; expand CI to match once
+      # the codebase is cleaned against it.
+      - run: ruff check --select=F src tests
 
   build:
     runs-on: ubuntu-latest

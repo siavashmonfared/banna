@@ -51,15 +51,8 @@ from .display import (
 )
 from .session import Session, Turn
 from .theme import (
-    BOX,
     BRAND,
-    BRAND_ICON,
-    HERO_FRAMES,
-    PROMPT as SCOUT_PROMPT,
     animate_hero,
-    render_hero_frame_ansi,
-    render_input_box_bottom,
-    render_input_box_top,
     scout_theme,
 )
 
@@ -151,7 +144,7 @@ class MyAgentApp:
         """
         self.console.print()
         self.console.print(
-            f"[yellow]⚠ agent wants to run a privileged shell command[/yellow]"
+            "[yellow]⚠ agent wants to run a privileged shell command[/yellow]"
         )
         self.console.print(f"  [bold red]$ {command}[/bold red]")
         self.console.print(f"  [dim]matched risky pattern: {matched}[/dim]")

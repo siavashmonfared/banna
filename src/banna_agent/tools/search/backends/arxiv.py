@@ -16,7 +16,6 @@ from __future__ import annotations
 import datetime as dt
 import re
 from dataclasses import dataclass
-from typing import Iterable
 from urllib.parse import quote
 
 from ..base import SearchResult

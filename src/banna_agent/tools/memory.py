@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..memory.base import Memory, MemoryEntry, MemoryKind, MemoryQuery
+from ..memory.base import Memory, MemoryEntry, MemoryQuery
 from .base import JsonTool
 
 

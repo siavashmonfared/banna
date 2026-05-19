@@ -1,7 +1,6 @@
 """Unit tests for InMemoryStore."""
 from __future__ import annotations
 
-import pytest
 
 from banna_agent.memory.base import MemoryEntry, MemoryQuery
 from banna_agent.memory.in_memory_store import InMemoryStore

@@ -13,11 +13,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-import pytest
 
 from banna_agent.core.state import AgentState
 from banna_agent.core.types import ActionKind, Budget
-from banna_agent.llm.base import ContentBlock, LLMReply, Message, Usage
+from banna_agent.llm.base import ContentBlock, LLMReply, Usage
 from banna_agent.policies.best_of_n import (
     BestOfNPolicy,
     _canonical_answer,

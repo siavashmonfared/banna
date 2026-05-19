@@ -1,7 +1,6 @@
 """CitationVerifier tests."""
 from __future__ import annotations
 
-import pytest
 
 from banna_agent.core.state import AgentState
 from banna_agent.core.types import Claim, Evidence

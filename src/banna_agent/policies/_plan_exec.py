@@ -23,13 +23,13 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Callable, Protocol
+from typing import Any, Callable
 
 from ..core.agent import _execute
 from ..core.events import EventLog
 from ..core.state import AgentState
 from ..core.types import Action, ActionKind, Observation
-from ..llm.base import ContentBlock, LLMClient, Message, ToolSpec
+from ..llm.base import ContentBlock, LLMClient, Message
 from ..tools.base import ToolRegistry
 from ._planning import Plan
 

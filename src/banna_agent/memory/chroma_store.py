@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any
 
 from .base import (
-    Memory,
     MemoryEntry,
     MemoryKind,
     MemoryQuery,

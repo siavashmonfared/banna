@@ -28,8 +28,11 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urljoin, urlparse
+
+if TYPE_CHECKING:
+    from .base import JsonTool
 
 
 _USER_AGENT = "banna_agent/0.1 (+https://github.com/)"

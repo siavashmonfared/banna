@@ -4,7 +4,6 @@ from __future__ import annotations
 import pytest
 
 from banna_agent.benchmarks.gaia.scorer import (
-    GAIAScore,
     normalize_string,
     parse_number,
     score_gaia,

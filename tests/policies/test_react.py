@@ -8,12 +8,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-import pytest
 
 from banna_agent.core.agent import run_policy
 from banna_agent.core.state import AgentState
 from banna_agent.core.types import ActionKind, Budget
-from banna_agent.llm.base import ContentBlock, LLMReply, Message, ToolSpec, Usage
+from banna_agent.llm.base import ContentBlock, LLMReply, ToolSpec, Usage
 from banna_agent.policies.react import ReActPolicy
 from banna_agent.tools.base import ToolRegistry
 from banna_agent.tools.calculator import make_calculator_tool
@@ -266,7 +265,7 @@ def test_commit_required_one_nudge_forces_tool_choice_anthropic() -> None:
             return _tool_reply("final_answer", {"answer": "42"})
 
     llm = _AnthropicLLM()
-    action = ReActPolicy().propose(state, llm=llm, tools=_final_answer_tools())
+    ReActPolicy().propose(state, llm=llm, tools=_final_answer_tools())
     assert _AnthropicLLM.last_extra is not None
     assert _AnthropicLLM.last_extra.get("tool_choice") == {
         "type": "tool", "name": "final_answer",

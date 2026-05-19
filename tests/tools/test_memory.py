@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import pytest
 
-from banna_agent.memory.base import MemoryEntry
 from banna_agent.memory.in_memory_store import InMemoryStore
 from banna_agent.tools.memory import make_memory_tool
 

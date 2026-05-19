@@ -10,7 +10,6 @@ These cover the seamless-with-AWS-keys flow:
 """
 from __future__ import annotations
 
-import os
 import warnings
 
 import pytest
@@ -67,7 +66,6 @@ def test_bedrock_pricing_keys_are_namespaced() -> None:
 def test_default_bedrock_model_is_in_curated_list() -> None:
     """`_bedrock_factory` defaults to a specific id; that id should be in
     the picker list so users see the default among their options."""
-    from banna_agent.llm.registry import _bedrock_factory
     # Default model captured in _bedrock_factory's kw.get default — read
     # by introspecting the function signature isn't clean, so we just
     # check the canonical default string lives in the list.

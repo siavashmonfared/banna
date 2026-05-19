@@ -197,7 +197,7 @@ def _cloud_flow(provider: str) -> tuple[str, str, str]:
     """Returns (provider, model, api_key). Loops on validation failure."""
     var = _PROVIDER_KEY_VAR[provider]
     _say(f"\n  Paste your {var}. (input is echoed; it'll be saved to")
-    _say(f"  ~/.config/banna/.env with mode 0600)")
+    _say("  ~/.config/banna/.env with mode 0600)")
     while True:
         key = _ask("  >").strip()
         if not key:

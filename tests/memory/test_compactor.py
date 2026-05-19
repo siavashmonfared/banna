@@ -4,13 +4,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-import pytest
 
 from banna_agent.core.agent import run_policy
 from banna_agent.core.events import EventKind, EventLog
 from banna_agent.core.state import AgentState
 from banna_agent.core.types import Action, ActionKind, Budget, Observation
-from banna_agent.llm.base import ContentBlock, LLMReply, Message, Usage
+from banna_agent.llm.base import ContentBlock, LLMReply, Usage
 from banna_agent.memory.compactor import (
     CompactionConfig,
     TraceCompactor,

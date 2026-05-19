@@ -19,8 +19,6 @@ Every return value is a JSON-serializable dict with at minimum
 """
 from __future__ import annotations
 
-import json
-import os
 from pathlib import Path
 from typing import Any
 

@@ -2,16 +2,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
 
 import pytest
 
 from banna_agent.core.state import AgentState
-from banna_agent.core.types import ActionKind, Budget
+from banna_agent.core.types import ActionKind
 from banna_agent.llm.base import ContentBlock, LLMReply, Usage
 from banna_agent.policies._plan_exec import (
-    PlanScore,
-    StepResult,
     execute_plan_step,
     score_plan,
 )

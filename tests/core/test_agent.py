@@ -6,7 +6,6 @@ driver's state-transition contract.
 """
 from __future__ import annotations
 
-import pytest
 
 from banna_agent.core.agent import run_policy
 from banna_agent.core.events import EventKind, EventLog

@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 
-import pytest
 
 from banna_agent.core.agent import run_policy
 from banna_agent.core.state import AgentState

@@ -15,7 +15,6 @@ nsjail, Docker, or gVisor. We note that in the docstring and move on.
 """
 from __future__ import annotations
 
-import json
 import subprocess
 import sys
 import tempfile

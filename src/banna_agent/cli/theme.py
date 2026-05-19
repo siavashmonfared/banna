@@ -24,6 +24,8 @@ Glyphs (from §04):
 """
 from __future__ import annotations
 
+from typing import Any
+
 from rich.theme import Theme
 
 
@@ -476,7 +478,7 @@ __all__ = [
     "PROMPT", "PROMPT_ACCENT_STYLE",
     "BRAND", "BRAND_ICON", "BRAND_TITLE",
     "TRAFFIC_RED", "TRAFFIC_YELLOW", "TRAFFIC_GREEN",
-    "HERO_MARK_GRID", "HERO_PALETTE", "HERO_BG",
+    "HERO_MARK_GRID", "HERO_PALETTE",
     "render_brand_title", "render_hero_mark_rows", "render_hero_mark_inline",
     "render_hero_frame", "render_hero_frame_ansi",
     "animate_hero", "HERO_FRAMES",

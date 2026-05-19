@@ -17,7 +17,6 @@ from banna_agent.core.types import (
     ActionKind,
     Budget,
     Observation,
-    Step,
 )
 from banna_agent.llm.base import ContentBlock, LLMReply, Usage
 from banna_agent.policies.react import (

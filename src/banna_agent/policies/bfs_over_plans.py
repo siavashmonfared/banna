@@ -21,10 +21,9 @@ We call it BFS because the *shape* of the search front is breadth-first
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
-from ..core.events import EventLog
 from ..core.state import AgentState
 from ..core.types import Action, ActionKind
 from ..llm.base import LLMClient

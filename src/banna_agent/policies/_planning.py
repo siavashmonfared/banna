@@ -17,7 +17,6 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..core.state import AgentState
 from ..llm.base import ContentBlock, LLMClient, Message
 
 

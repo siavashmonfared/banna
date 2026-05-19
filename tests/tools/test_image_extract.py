@@ -12,9 +12,7 @@ That lets us verify:
 """
 from __future__ import annotations
 
-import base64
 from dataclasses import dataclass, field
-from io import BytesIO
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +21,7 @@ import pytest
 PIL = pytest.importorskip("PIL")
 from PIL import Image  # noqa: E402
 
-from banna_agent.llm.base import ContentBlock, LLMReply, Message  # noqa: E402
+from banna_agent.llm.base import ContentBlock, LLMReply  # noqa: E402
 from banna_agent.tools.image_extract import make_image_extract_tool  # noqa: E402
 
 

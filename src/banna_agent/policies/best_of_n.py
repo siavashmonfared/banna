@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..core.state import AgentState
-from ..core.types import Action, ActionKind, Budget
+from ..core.types import Action, ActionKind
 from ..llm.base import ContentBlock, LLMClient, Message
 from ..tools.base import ToolRegistry
 from .react import ReActPolicy

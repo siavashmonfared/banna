@@ -120,7 +120,7 @@ def _pick(
         mark = " [green](current)[/green]" if opt == current else ""
         app.console.print(f"  [cyan]{i}.[/cyan] {opt}{mark}")
     if not options:
-        app.console.print(f"  [dim](no preset list — type a name)[/dim]")
+        app.console.print("  [dim](no preset list — type a name)[/dim]")
 
     hint_parts = []
     if options:
@@ -360,7 +360,6 @@ def cmd_policy(app: Any, args: list[str]) -> bool:
                     current=app.policy_name, allow_custom=False)
         if new is None:
             return False
-    previous = app.policy_name
     app.policy_name = new
     app.rebuild_policy()
 
@@ -392,8 +391,8 @@ def cmd_temperature(app: Any, args: list[str]) -> bool:
             return False
     else:
         app.console.print(
-            f"\n[bold]temperature[/bold]    "
-            f"[dim]controls LLM randomness; 0.0=deterministic, 1.0=creative[/dim]"
+            "\n[bold]temperature[/bold]    "
+            "[dim]controls LLM randomness; 0.0=deterministic, 1.0=creative[/dim]"
         )
         new = _ask_value(app, label="temperature", current=app.temperature,
                          parser=float)
@@ -571,7 +570,6 @@ def cmd_status(app: Any, args: list[str]) -> bool:
     Usage:
       /status              show everything in one panel-free dump
     """
-    import os as _os
     from ..llm.pricing import estimate_cost
 
     # ---- totals from session turns ------------------------------------

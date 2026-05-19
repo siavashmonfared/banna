@@ -28,7 +28,7 @@ import shlex
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Iterable, Sequence
+from typing import Callable, Sequence
 
 from ._parsers import Failure
 from ._parsers import pytest as _pytest_parser

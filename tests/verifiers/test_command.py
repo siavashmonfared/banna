@@ -23,7 +23,6 @@ from banna_agent.verifiers.command import (
     CommandSpec,
     CommandVerifier,
 )
-from banna_agent.verifiers.base import ANSWER_CLAIM_ID
 
 
 # ---------------------------------------------------------------------------

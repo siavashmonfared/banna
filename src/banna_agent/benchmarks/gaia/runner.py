@@ -23,7 +23,7 @@ import json
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Sequence
 
 from ...core.agent import run_policy
 from ...core.events import EventLog
