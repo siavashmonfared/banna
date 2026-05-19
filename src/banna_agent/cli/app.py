@@ -572,10 +572,18 @@ def main(argv: list[str] | None = None) -> int:
 
     args = _parse_args(argv)
 
-    provider = args.provider if args.provider != "openai" or "--provider" in raw \
+    # Saved config defaults take effect *only when the user didn't pass
+    # the corresponding flag*. We detect that by scanning `raw` rather
+    # than comparing against argparse defaults (which embed env-var
+    # fallbacks that can mask "user didn't say anything").
+    def _flag_present(flag: str) -> bool:
+        return any(a == flag or a.startswith(flag + "=") for a in raw)
+
+    provider = args.provider if _flag_present("--provider") \
         else cfg_default.get("provider", args.provider)
-    model = args.model if args.model is not None else cfg_default.get("model", args.model)
-    policy_name = args.policy if args.policy != "react" or "--policy" in raw \
+    model = args.model if _flag_present("--model") \
+        else cfg_default.get("model", args.model)
+    policy_name = args.policy if _flag_present("--policy") \
         else cfg_default.get("policy", args.policy)
 
     app = MyAgentApp(
