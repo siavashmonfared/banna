@@ -66,7 +66,7 @@ flowchart TB
 
 ```bash
 # 1. From PyPI (once published)
-pip install banna-agent
+pip install banna
 
 # 2. From GitHub directly (no clone, no PyPI required)
 pip install git+https://github.com/siavashmonfared/banna.git

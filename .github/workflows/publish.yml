@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: pypi
-      url: https://pypi.org/p/banna-agent
+      url: https://pypi.org/p/banna
     permissions:
       id-token: write  # OIDC for PyPI Trusted Publishing — no token needed
     steps:
