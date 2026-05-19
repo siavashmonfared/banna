@@ -498,7 +498,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def _load_dotenv() -> tuple[Path | None, int]:
-    """Auto-load a .env file from the cwd or ~/.config/myagent/.
+    """Auto-load a .env file from the cwd, `~/.config/banna/`, or
+    `~/.config/myagent/` (legacy).
 
     Lines are parsed as KEY=VALUE; lines starting with # and blank lines
     are skipped. **Existing os.environ vars are not overwritten** —
@@ -509,6 +510,7 @@ def _load_dotenv() -> tuple[Path | None, int]:
     """
     candidates = [
         Path.cwd() / ".env",
+        Path.home() / ".config" / "banna" / ".env",
         Path.home() / ".config" / "myagent" / ".env",
     ]
     for path in candidates:
@@ -544,12 +546,42 @@ def _load_dotenv() -> tuple[Path | None, int]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Subcommand dispatch (banna init / config / providers) before
+    # argparse, so legacy `banna --policy X` still works.
+    raw = list(sys.argv[1:] if argv is None else argv)
+    from . import subcommands as _sub
+    if _sub.is_subcommand(raw):
+        return _sub.dispatch(raw)
+
+    # First-run wizard: triggered when `~/.config/banna/config.toml`
+    # doesn't exist AND no provider key is reachable. Users who already
+    # `export OPENAI_API_KEY` in their shell keep working without a
+    # nag; users who pip-installed fresh get the walkthrough.
+    from .config_store import is_first_run, read_config
+
     dotenv_path, dotenv_n = _load_dotenv()
+    cfg_default: dict = (read_config().get("default") or {}) if not is_first_run() else {}
+
+    if is_first_run() and not any(
+        os.environ.get(v) for v in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY")
+    ):
+        from .setup_wizard import run_wizard
+        wiz = run_wizard()
+        dotenv_path, dotenv_n = _load_dotenv()
+        cfg_default = {"provider": wiz.provider, "model": wiz.model}
+
     args = _parse_args(argv)
+
+    provider = args.provider if args.provider != "openai" or "--provider" in raw \
+        else cfg_default.get("provider", args.provider)
+    model = args.model if args.model is not None else cfg_default.get("model", args.model)
+    policy_name = args.policy if args.policy != "react" or "--policy" in raw \
+        else cfg_default.get("policy", args.policy)
+
     app = MyAgentApp(
-        provider=args.provider,
-        model=args.model,
-        policy_name=args.policy,
+        provider=provider,
+        model=model,
+        policy_name=policy_name,
         temperature=args.temperature,
         n_candidates=args.n_candidates,
         budget_steps=args.budget_steps,

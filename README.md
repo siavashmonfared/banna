@@ -84,11 +84,20 @@ Any install path drops a `banna` (and `banna-agent`) executable on your `$PATH`.
 
 ## Quickstart
 
-```bash
-# set at least one provider key
-export OPENAI_API_KEY=sk-...        # or ANTHROPIC_API_KEY=... / GEMINI_API_KEY=...
+On first run `banna` walks you through a one-time setup — pick a provider, paste an API key (or use a local Ollama model), and save the choice to `~/.config/banna/`. After that, just type `banna`.
 
-# open the interactive REPL
+```bash
+# first run — interactive wizard auto-launches if no config is found
+banna
+# ● banna — first-run setup
+# No LLM provider configured. Let's pick one.
+#   1. Ollama       (local, 2 models installed)
+#   2. OpenAI       (cloud, paid)
+#   3. Anthropic    (cloud, paid)
+#   4. Gemini       (cloud, free tier)
+# Provider: [1]
+
+# subsequent runs use saved defaults; override any time with flags:
 banna --policy verifier_retry --provider openai --model gpt-5-nano
 
 # or run a single GAIA Level-1 question (no REPL)
@@ -124,6 +133,16 @@ $ banna --policy verifier_retry --provider openai --model gpt-5-nano
   …step-by-step dump of action + observation + meta…
 
 > /exit
+```
+
+### Subcommands
+
+```bash
+banna init                       # re-run the setup wizard
+banna config get                 # show saved defaults
+banna config set model gpt-4o    # change a single default
+banna providers                  # list configured providers + status
+banna providers --validate       # also make a 1-token test call against each
 ```
 
 The full GAIA validation runner (165 questions across L1/L2/L3) is in `experiments/02_gaia_full/run.py`.
