@@ -1,0 +1,807 @@
+"""ReAct policy — the baseline tool-use loop, implemented as a Policy.
+
+Design: this is a *Policy*, not the loop. The loop lives in
+`core/agent.py::run_policy`. A Policy is a function `(state) -> Action`.
+ReAct's decision rule is:
+
+  1. Convert the current AgentState into a prompt (question + trace
+     summary + tool results).
+  2. Call the LLM, declaring the available tools.
+  3. If the LLM returned tool_calls, emit the *first* tool_call as our
+     Action. (Parallel tool-use is possible but deferred; it's a
+     scheduling problem, not a ReAct one.)
+  4. Otherwise, if the LLM returned text, emit FINAL_ANSWER with the
+     text.
+  5. On any parse failure, emit a THINK action with the error text and
+     let the driver retry next tick.
+
+The *transition* (tool dispatch, observation, state update) happens in
+the driver. ReAct never touches tools or state mutation directly.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+from ..core.state import AgentState
+from ..core.types import Action, ActionKind
+from ..llm.base import ContentBlock, LLMClient, Message, ToolSpec
+from ..tools.base import ToolRegistry
+
+
+def _force_tool_extra(provider: str, tool_name: str | None) -> dict[str, Any]:
+    """Return provider-specific ``extra`` kwargs that force the next LLM
+    reply to call a tool.
+
+    When ``tool_name`` is given, pin the reply to that specific tool.
+    When ``tool_name`` is None, force the reply to call *some* tool
+    (any-tool mode) — useful when the model has been silent for several
+    turns and we have no evidence yet so committing `final_answer`
+    would just commit garbage.
+
+    Ollama support for forced tools varies wildly across local models —
+    we return an empty dict for ollama and rely on the consecutive-
+    commit-required hard cap below to escape the loop.
+    """
+    p = (provider or "").lower()
+    if p in ("anthropic", "bedrock"):
+        if tool_name is None:
+            return {"tool_choice": {"type": "any"}}
+        return {"tool_choice": {"type": "tool", "name": tool_name}}
+    if p == "openai":
+        if tool_name is None:
+            return {"tool_choice": "required"}
+        return {
+            "tool_choice": {
+                "type": "function",
+                "function": {"name": tool_name},
+            }
+        }
+    if p == "gemini":
+        cfg: dict[str, Any] = {"mode": "ANY"}
+        if tool_name is not None:
+            cfg["allowed_function_names"] = [tool_name]
+        return {"tool_config": {"function_calling_config": cfg}}
+    return {}
+
+
+def _count_consecutive_empty_replies(state: AgentState) -> int:
+    """How many `[empty_reply]` THINKs sit at the trace tail.
+
+    Separate from `_count_consecutive_commit_required` so we can branch
+    on the difference: empty replies with no evidence mean the model
+    has stopped responding *and* has nothing to commit; the right move
+    is to force any tool call, not force `final_answer`.
+    """
+    n = 0
+    for step in reversed(state.trace.steps):
+        m = step.action.meta or {}
+        if m.get("empty_reply"):
+            n += 1
+        else:
+            break
+    return n
+
+
+def _trace_has_evidence(state: AgentState) -> bool:
+    """True if the trace contains any successful tool call.
+
+    Used to choose between `tool_choice=required` (still gathering) vs
+    `tool_choice=final_answer` (have evidence, just need to commit) when
+    escaping the empty-reply loop.
+    """
+    for step in state.trace.steps:
+        if step.action.kind == ActionKind.TOOL_CALL and step.observation.ok:
+            return True
+    return False
+
+
+def _count_consecutive_commit_required(state: AgentState) -> int:
+    """How many commit_required / empty_reply THINKs sit at the trace tail.
+
+    Used to (a) escalate to forced tool_choice after one nudge, and
+    (b) hard-cap the loop at two so we never burn the step budget on
+    identical nudges (the ec09fa32 ping-pong-riddle failure).
+    """
+    n = 0
+    for step in reversed(state.trace.steps):
+        m = step.action.meta or {}
+        text = step.action.text or ""
+        if m.get("commit_required") or text.startswith("[empty_reply]"):
+            n += 1
+        else:
+            break
+    return n
+
+
+def _last_preceding_text(state: AgentState) -> str:
+    """Recover the most recent plain-text reply captured in a
+    commit_required THINK's meta. Used as the bailout answer when the
+    loop hits its hard cap."""
+    for step in reversed(state.trace.steps):
+        m = step.action.meta or {}
+        txt = m.get("preceding_text") or m.get("commit_required_text") or ""
+        if isinstance(txt, str) and txt.strip():
+            return txt.strip()
+    return ""
+
+
+DEFAULT_SYSTEM_PROMPT = (
+    "You are a careful agent. Two modes:\n"
+    "  (a) RESEARCH/QA: use tools to gather evidence, then COMMIT to a "
+    "concise final answer.\n"
+    "  (b) ACTION: if the user asks you to create, modify, save, or "
+    "delete a file; run, execute, install, or build something; write "
+    "code to disk; take any side effect — you MUST use the appropriate "
+    "tool to perform it. The tools available include `python_sandbox` "
+    "(run Python code, including file writes via pathlib), `run_shell` "
+    "(execute shell commands), `read_file` / `list_files` / `grep` "
+    "(inspect the filesystem). Returning the code or command as text "
+    "DOES NOT COUNT as completing the task. The user expects bytes on "
+    "disk or output from execution, not an explanation.\n\n"
+    "How to operate:\n"
+    "  • Use tools when you don't know an answer with confidence, OR "
+    "when the user wants you to do something rather than answer.\n"
+    "  • For conversational questions (greetings, basic facts you "
+    "already know), answer directly with no tools.\n"
+    "  • After 2-4 tool calls on a research topic you usually have what "
+    "you need. Stop searching and commit. Do NOT keep hunting for a "
+    "perfect-match \"official\" source once you have a defensible "
+    "answer from the data already gathered.\n"
+    "  • When the question asks for a number: COMPUTE it from the "
+    "intermediate values yourself (use calculator if needed) and give "
+    "the number with units.\n"
+    "  • When the question asks for a name, year, or list: just give "
+    "that, terse, no preamble.\n"
+    "  • For ACTION tasks: after the tool actually succeeds (you see "
+    "the observation), then emit a short FINAL_ANSWER confirming what "
+    "was done — e.g. \"Wrote 47 lines to /path/file.py and ran it; "
+    "output: ...\".\n"
+    "  • Once you have enough evidence (research) OR the side-effect "
+    "is confirmed (action): return PLAIN TEXT with the answer and no "
+    "further tool calls.\n\n"
+    "Common failure modes to AVOID:\n"
+    "  • RETURNING CODE OR COMMANDS AS TEXT WHEN THE USER ASKED YOU TO "
+    "RUN OR WRITE THEM. This is the single most common failure on "
+    "action tasks. If you catch yourself about to say \"save this to "
+    "X\" or \"run this command\", instead use a tool to do it.\n"
+    "  • Looping on additional searches when you already have a "
+    "defensible answer (the most common research-task mistake).\n"
+    "  • Hedging with multiple variants instead of picking one and "
+    "committing.\n"
+    "  • Stalling on minor precision when the question only needs an "
+    "order-of-magnitude or an approximate value."
+)
+
+
+# ---------------------------------------------------------------------------
+# Action-intent guard
+# ---------------------------------------------------------------------------
+
+
+# Imperative verbs that signal the user wants a side effect, not an
+# explanation. Match case-insensitively as standalone words.
+_ACTION_VERBS = frozenset({
+    "create", "make", "write", "save", "generate", "produce",
+    "run", "execute", "launch", "start",
+    "install", "build", "compile", "deploy", "setup", "set",
+    "modify", "edit", "patch", "rename", "delete", "remove",
+    "download", "fetch", "scrape",
+    "develop", "implement", "code",
+})
+
+# Hints that the user is pointing at a filesystem destination.
+_FS_HINTS = frozenset({
+    ".py", ".sh", ".js", ".ts", ".md", ".txt", ".json", ".yaml", ".yml",
+    ".html", ".css", ".csv", ".sql",
+    "~/", "./", "../",
+    "to disk", "to file", "to a file",
+    "in ~/", "in ./", "in /",
+    "save to", "save it to", "write to", "write it to",
+    "save as",
+})
+
+
+def _looks_like_action_request(question: str) -> bool:
+    """Cheap heuristic: does the user's question want a side effect?
+
+    Two signals must combine to qualify:
+      1. At least one imperative verb token from `_ACTION_VERBS`
+         appears as a word boundary match.
+      2. At least one filesystem-destination hint from `_FS_HINTS`
+         appears anywhere in the question.
+
+    Both are required to reduce false positives — "write a poem
+    about clouds" hits (1) but not (2); "the path to ~/Desktop is…"
+    hits (2) but not (1).
+    """
+    if not question:
+        return False
+    q = question.lower()
+    # (1) action verb as a word
+    import re
+    tokens = set(re.findall(r"[a-z]+", q))
+    if not (tokens & _ACTION_VERBS):
+        return False
+    # (2) filesystem hint anywhere
+    return any(h in q for h in _FS_HINTS)
+
+
+def _trace_has_successful_action(state: AgentState) -> bool:
+    """Has any tool_call already succeeded in this run?
+
+    If yes, the model is free to wrap up with a text final answer
+    summarizing what it did — the guard should not loop here. Only
+    fire the guard when we haven't yet performed a side effect.
+    """
+    for step in state.trace.steps:
+        if step.action.kind == ActionKind.TOOL_CALL and step.observation.ok:
+            return True
+    return False
+
+
+def _reply_looks_like_code_explanation(text: str) -> bool:
+    """Does the LLM's text reply contain a code block?
+
+    Triple-backtick fence is the strongest signal; we also accept a
+    long indented block of obvious code (def/class/import at start of
+    line) as a softer signal.
+    """
+    if not text:
+        return False
+    if "```" in text:
+        return True
+    # Soft signal: multiple python-shaped statements at the start of lines.
+    import re
+    code_lines = re.findall(
+        r"(?m)^\s*(?:def |class |import |from \S+ import |if __name__)",
+        text,
+    )
+    return len(code_lines) >= 2
+
+
+@dataclass
+class ReActPolicy:
+    """The baseline ReAct Policy. Provider-agnostic.
+
+    Fields:
+      name               - identifier used in events / ablation tables
+      system_prompt      - prepended to every chat call
+      model              - overrides LLMClient.model if set
+      max_tokens         - per-call ceiling
+      temperature        - per-call temperature
+    """
+
+    name: str = "react"
+    system_prompt: str = DEFAULT_SYSTEM_PROMPT
+    model: str | None = None
+    # Bumped from 1024 to give reasoning-capable models (gpt-5,
+    # o-series, …) enough headroom that internal CoT doesn't consume
+    # the entire budget before any visible text is emitted. Plain
+    # models just see slightly more output room and rarely use it.
+    max_tokens: int = 2048
+    temperature: float = 0.0
+    extra: dict[str, Any] = field(default_factory=dict)
+    # When `steps_used / max_steps` ≥ this fraction, append a "commit
+    # now" nudge to the message history so the model is forced to
+    # finalize even if the system prompt didn't already convince it.
+    # 0.6 = nudge appears once you've used 60% of your step budget.
+    # Set to 0 or > 1 to disable.
+    commit_pressure_threshold: float = 0.6
+
+    # If True (default), guard against the failure mode where the user
+    # asks for a side effect (write a file / run a script) and the
+    # model replies with code-as-text instead of invoking a tool. When
+    # the user's question looks action-shaped AND the LLM reply has
+    # no tool_calls AND the text contains a code block, emit a THINK
+    # with a re-prompt instead of FINAL_ANSWER. Set False to restore
+    # pre-patch behavior.
+    action_intent_guard: bool = True
+
+    # --- internal: message history reconstruction --------------------------
+
+    def _history(self, state: AgentState) -> list[Message]:
+        """Project AgentState.trace back into an LLM message list.
+
+        First turn: user with the question.
+        Subsequent turns replay prior (assistant tool_use, user tool_result)
+        pairs in order. Text-only THINK actions attach their text to the
+        assistant turn so the model sees its own reasoning.
+        """
+        msgs: list[Message] = [
+            Message(role="user", content=[ContentBlock(kind="text", text=state.question)])
+        ]
+        for step in state.trace.steps:
+            act = step.action
+            obs = step.observation
+            if act.kind == ActionKind.THINK:
+                # Default: represent thinking as an assistant text turn
+                # (the model's own scratchpad).
+                # Exception: feedback injected by external machinery (e.g.
+                # the verifier_retry wrapper) must appear as a USER turn,
+                # otherwise the model reads its own directive as its own
+                # thought and ignores it.
+                is_external = bool((act.meta or {}).get("verifier_retry"))
+                role = "user" if is_external else "assistant"
+                msgs.append(Message(
+                    role=role,
+                    content=[ContentBlock(kind="text", text=act.text or "")],
+                ))
+            elif act.kind == ActionKind.TOOL_CALL:
+                # assistant's tool_use turn. If the model wrote chain-of-
+                # thought text alongside the tool call (captured in
+                # meta.preceding_text), include it as a text block so the
+                # model's reasoning is part of the conversation history.
+                preceding = (act.meta or {}).get("preceding_text") or ""
+                blocks: list[ContentBlock] = []
+                if preceding.strip():
+                    blocks.append(ContentBlock(kind="text", text=preceding))
+                blocks.append(ContentBlock(
+                    kind="tool_use",
+                    id=f"step_{step.idx}",
+                    name=act.tool_name or "",
+                    arguments=dict(act.tool_args),
+                ))
+                msgs.append(Message(role="assistant", content=blocks))
+                # user's tool_result turn
+                if obs.ok:
+                    payload = obs.data
+                else:
+                    payload = {"error": obs.error or "tool failed"}
+                msgs.append(Message(
+                    role="user",
+                    content=[ContentBlock(
+                        kind="tool_result",
+                        id=f"step_{step.idx}",
+                        name=act.tool_name or "",
+                        result=payload,
+                        is_error=not obs.ok,
+                    )],
+                ))
+            # FINAL_ANSWER should terminate the loop, so we don't project it.
+
+        # Step-pressure nudge — once we've used ≥ commit_pressure_threshold
+        # of the step budget without finalizing, append an explicit
+        # "commit now" message. Reasoning models (gpt-5*, o-series)
+        # tend to keep verifying past the point of having a defensible
+        # answer; this gives the budget tracker a way to force them to
+        # commit before steps trip.
+        nudge = self._step_pressure_message(state)
+        if nudge is not None:
+            msgs.append(nudge)
+        return msgs
+
+    def _step_pressure_message(self, state: AgentState) -> Message | None:
+        max_steps = state.budget.max_steps
+        thr = self.commit_pressure_threshold
+        if not max_steps or thr <= 0 or thr > 1:
+            return None
+        used = state.budget.steps_used
+        if used / max_steps < thr:
+            return None
+        remaining = max_steps - used
+        text = (
+            f"NOTE FROM THE RUNTIME: you've already used {used} of "
+            f"{max_steps} step budget ({remaining} remaining). "
+            "Stop calling tools and commit to the best answer you can "
+            "produce from the data already gathered. Do not search for "
+            "additional confirmation — return PLAIN TEXT with the answer."
+        )
+        return Message(role="user", content=[ContentBlock(kind="text", text=text)])
+
+    # --- Policy.propose ----------------------------------------------------
+
+    def propose(
+        self,
+        state: AgentState,
+        *,
+        llm: LLMClient,
+        tools: ToolRegistry,
+    ) -> Action:
+        specs: list[ToolSpec] = tools.to_tool_specs()
+        kwargs: dict[str, Any] = {
+            "messages": self._history(state),
+            "tools": specs,
+            "max_tokens": self.max_tokens,
+            "temperature": self.temperature,
+            "system": self.system_prompt,
+        }
+        if self.model:
+            kwargs["model"] = self.model
+        if self.extra:
+            kwargs["extra"] = self.extra
+
+        # Repair-step handling: at the trace tail we may have a run of
+        # empty_reply / commit_required THINKs. Branch on what kind of
+        # stuck-ness we're in:
+        #
+        #   (a) ≥2 commit_required with a recoverable plain-text reply →
+        #       bail directly with that text as the answer.
+        #   (b) ≥2 empty_reply *and* no evidence yet → force any tool
+        #       call so the model starts gathering (rather than forcing
+        #       it to commit `final_answer` on an empty trace, which
+        #       would commit garbage).
+        #   (c) ≥1 nudge of any kind with `final_answer` registered →
+        #       force `final_answer` so the model commits what it has.
+        tool_names = tools.names() if tools is not None else ()
+        cr_run = _count_consecutive_commit_required(state)
+        empty_run = _count_consecutive_empty_replies(state)
+        preceding = _last_preceding_text(state)
+
+        if cr_run >= 2 and preceding and "final_answer" in tool_names:
+            return Action(
+                kind=ActionKind.FINAL_ANSWER,
+                answer=preceding,
+                meta={
+                    "policy": self.name,
+                    "commit_required_bailout": True,
+                    "consecutive_nudges": cr_run,
+                },
+            )
+
+        if empty_run >= 2 and not _trace_has_evidence(state):
+            forced = _force_tool_extra(getattr(llm, "provider", ""), None)
+            if forced:
+                merged = dict(kwargs.get("extra") or {})
+                merged.update(forced)
+                kwargs["extra"] = merged
+        elif cr_run >= 1 and "final_answer" in tool_names:
+            forced = _force_tool_extra(
+                getattr(llm, "provider", ""), "final_answer",
+            )
+            if forced:
+                merged = dict(kwargs.get("extra") or {})
+                merged.update(forced)
+                kwargs["extra"] = merged
+
+        try:
+            reply = llm.chat(**kwargs)
+        except Exception as exc:
+            # The driver will see a THINK with this text and may tick again.
+            return Action(
+                kind=ActionKind.THINK,
+                text=f"[llm_error] {type(exc).__name__}: {exc}",
+                meta={"policy": self.name, "error": True},
+            )
+
+        # Prefer tool calls over text. Take the first tool_call only for now;
+        # parallel tool-use is a scheduling feature the driver will gain later.
+        if reply.has_tool_calls:
+            call = reply.tool_calls[0]
+            # The model may emit reasoning text alongside the tool call in
+            # the same response (chain-of-thought before commit). Preserve
+            # it so future turns see the model's working — both as
+            # context for its own next decision and so it can use it as
+            # CoT scaffolding when writing the answer.
+            preceding_text = (reply.text or "").strip()
+            # Intercept `final_answer` calls: they're a structured commit
+            # channel, not a real side-effect tool. Convert directly to a
+            # FINAL_ANSWER action so the agent loop terminates with the
+            # `answer` field (not the model's surrounding text).
+            if call.name == "final_answer":
+                args = dict(call.arguments or {})
+                ans = str(args.get("answer", "")).strip()
+                reasoning = str(args.get("reasoning", "")).strip()
+                # Phase 7: register the answer as a Claim with the model's
+                # cited evidence_ids. The CitationVerifier then grades
+                # support (Jaccard overlap + numeric-substring check)
+                # and rejects fabricated answers with no grounding.
+                raw_ids = args.get("evidence_ids") or []
+                if isinstance(raw_ids, str):
+                    raw_ids = [raw_ids]
+                evidence_ids = [
+                    str(x).strip() for x in raw_ids if str(x).strip()
+                ]
+                # Only register a citation-bearing claim when the model
+                # actually cited something — otherwise CoverageVerifier
+                # would flag every uncited answer as "no support" which
+                # blocks turns that legitimately need no external evidence
+                # (e.g. the riddle in ec09fa32).
+                if evidence_ids:
+                    state.add_claim(
+                        text=ans,
+                        supports=evidence_ids,
+                        origin_step=len(state.trace.steps),
+                    )
+                return Action(
+                    kind=ActionKind.FINAL_ANSWER,
+                    answer=ans,
+                    text=reasoning or ans,
+                    meta={
+                        "policy": self.name,
+                        "provider": reply.provider,
+                        "model": reply.model,
+                        "stop_reason": reply.stop_reason,
+                        "tokens_in": reply.usage.tokens_in,
+                        "tokens_out": reply.usage.tokens_out,
+                        "via_final_answer_tool": True,
+                        "preceding_text": preceding_text,
+                        "evidence_ids": evidence_ids,
+                    },
+                )
+            return Action(
+                kind=ActionKind.TOOL_CALL,
+                tool_name=call.name,
+                tool_args=dict(call.arguments),
+                meta={
+                    "policy": self.name,
+                    "provider": reply.provider,
+                    "model": reply.model,
+                    "stop_reason": reply.stop_reason,
+                    "tokens_in": reply.usage.tokens_in,
+                    "tokens_out": reply.usage.tokens_out,
+                    "preceding_text": preceding_text,
+                },
+            )
+
+        # No tools called.
+        text = reply.text.strip()
+        if not text:
+            # The model produced nothing actionable; think and try again.
+            # Tagged `repair=True` so it doesn't consume the main step
+            # budget — burned-step empties were a top failure mode on
+            # gpt-5-nano (see validation_experiment_gpt_nano_05162026.md).
+            return Action(
+                kind=ActionKind.THINK,
+                text="[empty_reply] model returned no text and no tool_calls",
+                meta={
+                    "policy": self.name,
+                    "stop_reason": reply.stop_reason,
+                    "repair": True,
+                    "empty_reply": True,
+                },
+            )
+
+        # If the `final_answer` tool is registered, the model is expected
+        # to commit via that tool — not via a plain-text turn. Push the
+        # model toward the tool via a user-role THINK instead of silently
+        # promoting prose to FINAL_ANSWER (which conflates reasoning with
+        # the committed answer and breaks exact-match scoring).
+        if "final_answer" in (tools.names() if tools is not None else ()):
+            return Action(
+                kind=ActionKind.THINK,
+                text=(
+                    "[commit_required] You responded with plain text, but "
+                    "this task only accepts answers via the `final_answer` "
+                    "tool. Call `final_answer` now with the literal answer "
+                    "in the `answer` field. Put any explanation in the "
+                    "`reasoning` field — do NOT put it in `answer`."
+                ),
+                meta={
+                    "policy": self.name,
+                    "verifier_retry": True,  # render as user-role next tick
+                    "commit_required": True,
+                    "repair": True,
+                    # Stash the plain-text reply so the next-tick bailout
+                    # (if the model ignores the forced tool_choice) can
+                    # recover the model's answer instead of submitting "".
+                    "preceding_text": text,
+                    "stop_reason": reply.stop_reason,
+                    "tokens_in": reply.usage.tokens_in,
+                    "tokens_out": reply.usage.tokens_out,
+                },
+            )
+
+        # Action-intent guard: if the user wanted a side effect and the
+        # model replied with code-as-text, don't declare victory. Emit
+        # a THINK with a hint so the next tick re-asks the model to
+        # actually invoke a tool. See `_looks_like_action_request` and
+        # `_reply_looks_like_code_explanation`.
+        if (
+            self.action_intent_guard
+            and _looks_like_action_request(state.question)
+            and _reply_looks_like_code_explanation(text)
+            and not _trace_has_successful_action(state)
+        ):
+            return Action(
+                kind=ActionKind.THINK,
+                text=(
+                    "[action_required] The user asked for a side effect "
+                    "(file write, code execution, etc.) but the previous "
+                    "reply was code-as-text with no tool call. Re-do this "
+                    "by calling `python_sandbox` (to run Python that writes "
+                    "the file, e.g. via `pathlib.Path(...).write_text(...)`) "
+                    "or `run_shell` (to execute the command). Do NOT return "
+                    "the code as text; actually perform the side effect."
+                ),
+                meta={
+                    "policy": self.name,
+                    "guard": "action_intent",
+                    "stop_reason": reply.stop_reason,
+                    "tokens_in": reply.usage.tokens_in,
+                    "tokens_out": reply.usage.tokens_out,
+                },
+            )
+
+        return Action(
+            kind=ActionKind.FINAL_ANSWER,
+            answer=text,
+            text=text,
+            meta={
+                "policy": self.name,
+                "provider": reply.provider,
+                "model": reply.model,
+                "stop_reason": reply.stop_reason,
+                "tokens_in": reply.usage.tokens_in,
+                "tokens_out": reply.usage.tokens_out,
+            },
+        )
+
+    # ------------------------------------------------------------------
+    # Budget-exhaustion synthesis
+    # ------------------------------------------------------------------
+
+    def synthesize_on_exhaustion(
+        self,
+        state: AgentState,
+        *,
+        llm: LLMClient | None = None,
+        tools: ToolRegistry | None = None,
+        timeout_s: float = 15.0,
+    ) -> Action | None:
+        """Emit a best-effort FINAL_ANSWER when the budget just tripped.
+
+        Default chain:
+          1. One-shot LLM call with `tool_choice=final_answer` and a
+             short max_tokens. The model sees the question + a compact
+             trace digest and is told "your budget ran out; commit your
+             best guess now". Capped by ``timeout_s`` wall.
+          2. If the LLM call fails / times out / returns empty → fall
+             through to the cheap branch.
+          3. Cheap branch: most recent Claim text → most recent short
+             plain-text reply on the trace → ``None`` (caller decides).
+
+        Returning ``None`` means "no synthesis available"; the caller
+        leaves ``trace.final_answer`` unset.
+        """
+        # --- Cheap fallback (used as the safety net for branch 1) ---
+        def _cheap() -> Action | None:
+            if state.claims:
+                ans = (state.claims[-1].text or "").strip()
+                if ans:
+                    return Action(
+                        kind=ActionKind.FINAL_ANSWER,
+                        answer=ans,
+                        text=ans,
+                        meta={
+                            "policy": self.name,
+                            "synthesis": "cheap_last_claim",
+                        },
+                    )
+            for step in reversed(state.trace.steps):
+                m = step.action.meta or {}
+                txt = (m.get("preceding_text") or "").strip()
+                if not txt:
+                    txt = (step.action.text or "").strip()
+                # Short text only — long traces are reasoning, not answers.
+                if txt and len(txt) <= 80:
+                    return Action(
+                        kind=ActionKind.FINAL_ANSWER,
+                        answer=txt,
+                        text=txt,
+                        meta={
+                            "policy": self.name,
+                            "synthesis": "cheap_last_text",
+                        },
+                    )
+            return None
+
+        if llm is None or tools is None:
+            return _cheap()
+
+        if "final_answer" not in tools.names():
+            return _cheap()
+
+        # --- Branch 1: LLM-driven best-effort commit ---
+        try:
+            digest = self._exhaustion_digest(state)
+        except Exception:
+            return _cheap()
+
+        synth_system = (
+            "You ran out of budget before committing an answer. "
+            "Look at the question and the trace digest below, then "
+            "call `final_answer` exactly once with your single best "
+            "guess. Do NOT call any other tool. If you truly have no "
+            "information, still emit your best guess from the question "
+            "itself — empty answers always score zero."
+        )
+        synth_user = (
+            f"Question: {state.question}\n\n"
+            f"Trace digest:\n{digest}\n\n"
+            "Commit your best answer now via `final_answer`."
+        )
+        kwargs: dict[str, Any] = {
+            "messages": [Message(role="user", content=synth_user)],
+            "tools": tools.specs() if hasattr(tools, "specs") else None,
+            "max_tokens": 256,
+            "temperature": 0.0,
+            "system": synth_system,
+        }
+        if self.model:
+            kwargs["model"] = self.model
+        forced = _force_tool_extra(getattr(llm, "provider", ""), "final_answer")
+        if forced:
+            kwargs["extra"] = forced
+
+        import threading
+
+        result: dict[str, Any] = {}
+
+        def _call() -> None:
+            try:
+                result["reply"] = llm.chat(**kwargs)
+            except Exception as exc:  # pragma: no cover (provider-specific)
+                result["error"] = exc
+
+        t = threading.Thread(target=_call, daemon=True)
+        t.start()
+        t.join(timeout_s)
+        if t.is_alive() or "reply" not in result:
+            return _cheap()
+
+        reply = result["reply"]
+        if reply.has_tool_calls:
+            call = reply.tool_calls[0]
+            if call.name == "final_answer":
+                args = dict(call.arguments or {})
+                ans = str(args.get("answer", "")).strip()
+                if ans:
+                    return Action(
+                        kind=ActionKind.FINAL_ANSWER,
+                        answer=ans,
+                        text=str(args.get("reasoning", "")).strip() or ans,
+                        meta={
+                            "policy": self.name,
+                            "synthesis": "llm",
+                            "provider": reply.provider,
+                            "model": reply.model,
+                            "tokens_in": reply.usage.tokens_in,
+                            "tokens_out": reply.usage.tokens_out,
+                        },
+                    )
+        # The model returned plain text (or empty) — fall back.
+        txt = (reply.text or "").strip()
+        if txt and len(txt) <= 240:
+            return Action(
+                kind=ActionKind.FINAL_ANSWER,
+                answer=txt,
+                text=txt,
+                meta={
+                    "policy": self.name,
+                    "synthesis": "llm_text",
+                    "provider": reply.provider,
+                    "model": reply.model,
+                    "tokens_in": reply.usage.tokens_in,
+                    "tokens_out": reply.usage.tokens_out,
+                },
+            )
+        return _cheap()
+
+    def _exhaustion_digest(self, state: AgentState, *, max_items: int = 8) -> str:
+        """Compact, model-readable summary of the trace for synthesis.
+
+        We pick the last `max_items` tool-call outcomes and any claims,
+        formatted as one short line each. Keeps prompt cost negligible.
+        """
+        lines: list[str] = []
+        for step in state.trace.steps[-max_items:]:
+            a = step.action
+            if a.kind == ActionKind.TOOL_CALL:
+                ok = "ok" if step.observation.ok else "err"
+                preview = (step.observation.text or "")
+                if isinstance(step.observation.data, dict):
+                    for k in ("summary", "text", "answer", "value"):
+                        v = step.observation.data.get(k)
+                        if isinstance(v, str) and v.strip():
+                            preview = v
+                            break
+                preview = preview[:120].replace("\n", " ")
+                lines.append(f"- tool {a.tool_name} ({ok}): {preview}")
+            elif a.kind == ActionKind.THINK and not (a.meta or {}).get("repair"):
+                txt = (a.text or "")[:120].replace("\n", " ")
+                if txt:
+                    lines.append(f"- think: {txt}")
+        for cl in state.claims[-3:]:
+            lines.append(f"- claim: {cl.text[:120]}")
+        return "\n".join(lines) if lines else "(empty trace)"

@@ -1,0 +1,43 @@
+# --- secrets / credentials ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- python / build artifacts ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# --- caches ---
+.cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- run output / logs ---
+logs/
+results.jsonl
+*.jsonl
+**/results/
+experiments/**/runs/
+.quarantine/
+
+# --- internal scratchpad / personal notes ---
+validation_experiment_*.md
+NOTES.md
+TODO.md
+scratch/
+
+# --- editor / OS ---
+.vscode/
+.idea/
+*.swp
+.DS_Store

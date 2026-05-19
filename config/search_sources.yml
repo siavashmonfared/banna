@@ -1,0 +1,741 @@
+version: 1
+description: >
+  Starter source map for the agent-facing search router. YaCy should crawl
+  sources in the sources list as a curated local cache. Queries that have
+  official structured APIs should route to official_api_targets instead of
+  relying only on crawled pages.
+
+defaults:
+  enabled: true
+  backend: yacy
+  language: en
+  cadence: daily
+  crawl_depth: 1
+  scope: domain
+  max_pages_per_domain: 200
+  store_cache: false
+  respect_robots: true
+
+official_api_targets:
+  - id: sec_edgar
+    name: SEC EDGAR
+    topics: [finance, companies, filings]
+    endpoint: https://data.sec.gov/submissions/
+    preferred_for: [10-k, 10-q, 8-k, proxies, company_disclosures]
+  - id: fred_api
+    name: FRED and ALFRED
+    topics: [finance, macro, economics, modeling]
+    endpoint: https://fred.stlouisfed.org/docs/api/fred/
+    preferred_for: [macro_time_series, vintages, releases, economic_indicators]
+  - id: treasury_rates_xml
+    name: U.S. Treasury Daily Rates XML
+    topics: [finance, rates, macro, modeling]
+    endpoint: https://home.treasury.gov/resource-center/data-chart-center/interest-rates/pages/xml
+    preferred_for: [treasury_yield_curve, bill_rates, real_yields, long_term_rates]
+  - id: bls_api
+    name: Bureau of Labor Statistics API
+    topics: [finance, macro, labor, economics, modeling]
+    endpoint: https://www.bls.gov/developers/
+    preferred_for: [cpi, payrolls, unemployment, wages, labor_time_series]
+  - id: bea_api
+    name: Bureau of Economic Analysis API
+    topics: [finance, macro, economics, modeling]
+    endpoint: https://apps.bea.gov/api/
+    preferred_for: [gdp, pce, national_accounts, regional_accounts]
+  - id: eia_api
+    name: U.S. Energy Information Administration API
+    topics: [finance, commodities, energy, macro, modeling]
+    endpoint: https://www.eia.gov/opendata/
+    preferred_for: [oil, gas, electricity, energy_prices, inventories]
+  - id: cftc_cot
+    name: CFTC Commitments of Traders
+    topics: [finance, futures, positioning, modeling]
+    endpoint: https://www.cftc.gov/MarketReports/CommitmentsofTraders/index.htm
+    preferred_for: [futures_positioning, leveraged_funds, asset_managers, managed_money]
+  - id: pubmed_ncbi
+    name: PubMed and NCBI E-utilities
+    topics: [science, biomedicine, papers]
+    endpoint: https://eutils.ncbi.nlm.nih.gov/entrez/eutils/
+    preferred_for: [biomedical_literature, abstracts, mesh]
+  - id: clinicaltrials
+    name: ClinicalTrials.gov
+    topics: [science, biomedicine, clinical_trials]
+    endpoint: https://clinicaltrials.gov/data-api/api
+    preferred_for: [trial_status, interventions, conditions, sponsors]
+  - id: openfda
+    name: openFDA
+    topics: [science, health, regulation]
+    endpoint: https://api.fda.gov/
+    preferred_for: [drug_labels, adverse_events, recalls, device_events]
+  - id: wikipedia_mediawiki
+    name: Wikipedia and MediaWiki
+    topics: [reference, encyclopedia]
+    endpoint: https://www.mediawiki.org/wiki/API:Main_page
+    preferred_for: [encyclopedia_facts, entity_summaries]
+  - id: openalex
+    name: OpenAlex
+    topics: [science, scholarly]
+    endpoint: https://api.openalex.org/
+    preferred_for: [scholarly_graph, authors, institutions, works]
+  - id: crossref
+    name: Crossref
+    topics: [science, scholarly]
+    endpoint: https://api.crossref.org/
+    preferred_for: [doi_metadata, publication_metadata]
+  - id: arxiv_api
+    name: arXiv API
+    topics: [science, ai, scholarly]
+    endpoint: https://export.arxiv.org/api/query
+    preferred_for: [preprints, ai_research, physics, quantitative_biology]
+  - id: federal_register_api
+    name: Federal Register API
+    topics: [government, regulation]
+    endpoint: https://www.federalregister.gov/developers/documentation/api/v1
+    preferred_for: [rules, proposed_rules, notices, agency_documents]
+  - id: govinfo_api
+    name: govinfo API
+    topics: [government, legislation, records]
+    endpoint: https://api.govinfo.gov/docs/
+    preferred_for: [congressional_records, bills, statutes, federal_documents]
+  - id: congress_api
+    name: Congress.gov API
+    topics: [government, legislation]
+    endpoint: https://api.congress.gov/
+    preferred_for: [bills, amendments, members, committees]
+  - id: usaspending_api
+    name: USAspending API
+    topics: [government, finance, grants, contracts]
+    endpoint: https://api.usaspending.gov/
+    preferred_for: [federal_awards, grants, contracts, recipients]
+
+sources:
+  - id: fda_press
+    name: FDA Press Announcements
+    source_tier: official
+    topics: [science, health, government]
+    base_url: https://www.fda.gov/
+    crawl_url: https://www.fda.gov/news-events/fda-newsroom/press-announcements
+    cadence: daily
+    crawl_depth: 1
+    max_pages_per_domain: 250
+    api_preferred: openfda
+    trust_notes: Prefer openFDA/FDA databases for records; use this for FDA news context.
+
+  - id: nih_news
+    name: NIH News Releases
+    source_tier: official
+    topics: [science, health, government]
+    base_url: https://www.nih.gov/
+    crawl_url: https://www.nih.gov/news-events/news-releases
+    cadence: daily
+
+  - id: cdc_news
+    name: CDC Newsroom
+    source_tier: official
+    topics: [science, health, government]
+    base_url: https://www.cdc.gov/
+    crawl_url: https://www.cdc.gov/media/
+    cadence: daily
+
+  - id: cms_news
+    name: CMS Newsroom
+    source_tier: official
+    topics: [health, government, regulation]
+    base_url: https://www.cms.gov/
+    crawl_url: https://www.cms.gov/newsroom
+    cadence: daily
+
+  - id: sec_press
+    name: SEC Press Releases
+    source_tier: official
+    topics: [finance, government, regulation]
+    base_url: https://www.sec.gov/
+    crawl_url: https://www.sec.gov/newsroom/press-releases
+    cadence: daily
+    api_preferred: sec_edgar
+    trust_notes: Use EDGAR for filings; use SEC news for enforcement and policy announcements.
+
+  - id: sec_filings
+    name: SEC Structured Disclosure RSS Feeds
+    source_tier: official
+    topics: [finance, filings, companies, modeling, finance_quant]
+    base_url: https://www.sec.gov/
+    crawl_url: https://www.sec.gov/data-research/structured-data/structured-disclosure-rss-feeds
+    cadence: hourly
+    crawl_depth: 0
+    max_pages_per_domain: 50
+    api_preferred: sec_edgar
+    trust_notes: SEC says structured disclosure RSS feeds update every ten minutes on weekdays; use EDGAR APIs for actual filing retrieval and XBRL data.
+
+  - id: federal_register_recent
+    name: Federal Register Documents
+    source_tier: official
+    topics: [government, regulation]
+    base_url: https://www.federalregister.gov/
+    crawl_url: https://www.federalregister.gov/documents
+    cadence: daily
+    api_preferred: federal_register_api
+
+  - id: federal_reserve_news
+    name: Federal Reserve News and Events
+    source_tier: official
+    topics: [finance, government, macro]
+    base_url: https://www.federalreserve.gov/
+    crawl_url: https://www.federalreserve.gov/newsevents.htm
+    cadence: daily
+
+  - id: federal_reserve_feeds
+    name: Federal Reserve RSS and Data Feeds
+    source_tier: official
+    topics: [finance, macro, rates, modeling, finance_quant]
+    base_url: https://www.federalreserve.gov/
+    crawl_url: https://www.federalreserve.gov/feeds/feeds.htm
+    cadence: daily
+    crawl_depth: 0
+    trust_notes: Use this to discover Fed release feeds; use official Fed/FRED series endpoints for numeric data.
+
+  - id: federal_reserve_feds
+    name: Federal Reserve FEDS Working Papers
+    source_tier: official_research
+    topics: [finance, macro, research, modeling, finance_quant]
+    base_url: https://www.federalreserve.gov/
+    crawl_url: https://www.federalreserve.gov/econres/feds/index.htm
+    cadence: daily
+    crawl_depth: 1
+
+  - id: treasury_press
+    name: U.S. Treasury Press Releases
+    source_tier: official
+    topics: [finance, government, geopolitics]
+    base_url: https://home.treasury.gov/
+    crawl_url: https://home.treasury.gov/news/press-releases
+    cadence: daily
+
+  - id: treasury_daily_rates
+    name: Treasury Daily Interest Rate XML Feed
+    source_tier: official
+    topics: [finance, rates, macro, modeling, finance_quant]
+    base_url: https://home.treasury.gov/
+    crawl_url: https://home.treasury.gov/treasury-daily-interest-rate-xml-feed
+    cadence: daily
+    crawl_depth: 0
+    api_preferred: treasury_rates_xml
+    trust_notes: YaCy should index docs/announcements; use the XML endpoint for actual curve data.
+
+  - id: bls_releases
+    name: BLS Economic News Releases
+    source_tier: official
+    topics: [finance, macro, labor, economics, modeling, finance_quant]
+    base_url: https://www.bls.gov/
+    crawl_url: https://www.bls.gov/bls/newsrels.htm
+    cadence: daily
+    crawl_depth: 1
+    api_preferred: bls_api
+
+  - id: bea_news
+    name: BEA News Releases
+    source_tier: official
+    topics: [finance, macro, economics, modeling, finance_quant]
+    base_url: https://www.bea.gov/
+    crawl_url: https://www.bea.gov/news
+    cadence: daily
+    crawl_depth: 1
+    api_preferred: bea_api
+
+  - id: eia_today
+    name: EIA Today in Energy
+    source_tier: official
+    topics: [finance, commodities, energy, macro, modeling, finance_quant]
+    base_url: https://www.eia.gov/
+    crawl_url: https://www.eia.gov/todayinenergy/
+    cadence: daily
+    crawl_depth: 1
+    api_preferred: eia_api
+
+  - id: cftc_cot_reports
+    name: CFTC Commitments of Traders Reports
+    source_tier: official
+    topics: [finance, futures, positioning, hedge_funds, modeling, finance_quant]
+    base_url: https://www.cftc.gov/
+    crawl_url: https://www.cftc.gov/MarketReports/CommitmentsofTraders/index.htm
+    cadence: weekly
+    crawl_depth: 1
+    api_preferred: cftc_cot
+    trust_notes: CFTC COT is normally released weekly; use structured CSV/public reporting data for modeling.
+
+  - id: cftc_cot_schedule
+    name: CFTC COT Release Schedule
+    source_tier: official
+    topics: [finance, futures, positioning, modeling, finance_quant]
+    base_url: https://www.cftc.gov/
+    crawl_url: https://www.cftc.gov/MarketReports/CommitmentsofTraders/ReleaseSchedule/index.htm
+    cadence: weekly
+    crawl_depth: 0
+
+  - id: state_dept_press
+    name: U.S. State Department Press Releases
+    source_tier: official
+    topics: [government, geopolitics]
+    base_url: https://www.state.gov/
+    crawl_url: https://www.state.gov/press-releases/
+    cadence: daily
+
+  - id: dod_releases
+    name: U.S. Department of Defense Releases
+    source_tier: official
+    topics: [government, geopolitics, defense]
+    base_url: https://www.defense.gov/
+    crawl_url: https://www.defense.gov/News/Releases/
+    cadence: daily
+
+  - id: white_house_briefing
+    name: White House Briefing Room
+    source_tier: official
+    topics: [government, geopolitics, policy]
+    base_url: https://www.whitehouse.gov/
+    crawl_url: https://www.whitehouse.gov/briefing-room/
+    cadence: daily
+
+  - id: noaa_news
+    name: NOAA News
+    source_tier: official
+    topics: [science, climate, government]
+    base_url: https://www.noaa.gov/
+    crawl_url: https://www.noaa.gov/news
+    cadence: daily
+
+  - id: nature_news
+    name: Nature News
+    source_tier: curated_news
+    topics: [science]
+    base_url: https://www.nature.com/
+    crawl_url: https://www.nature.com/nature/articles?type=news
+    cadence: daily
+    crawl_depth: 1
+
+  - id: science_news
+    name: Science News
+    source_tier: curated_news
+    topics: [science]
+    base_url: https://www.science.org/
+    crawl_url: https://www.science.org/news
+    cadence: daily
+
+  - id: stat_news
+    name: STAT
+    source_tier: curated_news
+    topics: [science, health, biotech]
+    base_url: https://www.statnews.com/
+    crawl_url: https://www.statnews.com/
+    cadence: daily
+    trust_notes: Good for biopharma and health news; check primary sources for regulatory claims.
+
+  - id: biopharma_dive
+    name: BioPharma Dive
+    source_tier: curated_news
+    topics: [science, health, biotech, finance]
+    base_url: https://www.biopharmadive.com/
+    crawl_url: https://www.biopharmadive.com/
+    cadence: daily
+
+  - id: fierce_biotech
+    name: Fierce Biotech
+    source_tier: curated_news
+    topics: [science, health, biotech, finance]
+    base_url: https://www.fiercebiotech.com/
+    crawl_url: https://www.fiercebiotech.com/
+    cadence: daily
+
+  - id: openai_news
+    name: OpenAI News
+    source_tier: primary_vendor
+    topics: [ai, technology]
+    base_url: https://openai.com/
+    crawl_url: https://openai.com/news/
+    cadence: daily
+
+  - id: anthropic_news
+    name: Anthropic News
+    source_tier: primary_vendor
+    topics: [ai, technology]
+    base_url: https://www.anthropic.com/
+    crawl_url: https://www.anthropic.com/news
+    cadence: daily
+
+  - id: google_deepmind_blog
+    name: Google DeepMind Blog
+    source_tier: primary_vendor
+    topics: [ai, technology, science]
+    base_url: https://deepmind.google/
+    crawl_url: https://deepmind.google/discover/blog/
+    cadence: daily
+
+  - id: meta_ai_blog
+    name: Meta AI Blog
+    source_tier: primary_vendor
+    topics: [ai, technology]
+    base_url: https://ai.meta.com/
+    crawl_url: https://ai.meta.com/blog/
+    cadence: daily
+
+  - id: microsoft_ai_blog
+    name: Microsoft AI Blog
+    source_tier: primary_vendor
+    topics: [ai, technology]
+    base_url: https://blogs.microsoft.com/
+    crawl_url: https://blogs.microsoft.com/ai/
+    cadence: daily
+
+  - id: nvidia_blog
+    name: NVIDIA Blog
+    source_tier: primary_vendor
+    topics: [ai, technology, semiconductors]
+    base_url: https://blogs.nvidia.com/
+    crawl_url: https://blogs.nvidia.com/
+    cadence: daily
+
+  - id: huggingface_blog
+    name: Hugging Face Blog
+    source_tier: primary_vendor
+    topics: [ai, open_source]
+    base_url: https://huggingface.co/
+    crawl_url: https://huggingface.co/blog
+    cadence: daily
+
+  - id: mit_tech_review_ai
+    name: MIT Technology Review AI
+    source_tier: curated_news
+    topics: [ai, technology]
+    base_url: https://www.technologyreview.com/
+    crawl_url: https://www.technologyreview.com/topic/artificial-intelligence/
+    cadence: daily
+
+  - id: ars_technica_ai
+    name: Ars Technica AI
+    source_tier: curated_news
+    topics: [ai, technology]
+    base_url: https://arstechnica.com/
+    crawl_url: https://arstechnica.com/ai/
+    cadence: daily
+
+  - id: arxiv_cs_ai
+    name: arXiv cs.AI Recent
+    source_tier: official
+    topics: [ai, science, scholarly]
+    base_url: https://arxiv.org/
+    crawl_url: https://arxiv.org/list/cs.AI/recent
+    cadence: daily
+    crawl_depth: 0
+    api_preferred: arxiv_api
+
+  - id: arxiv_q_fin
+    name: arXiv q-fin Recent
+    source_tier: official
+    topics: [finance, quant, research, modeling, finance_quant]
+    base_url: https://arxiv.org/
+    crawl_url: https://arxiv.org/list/q-fin/recent
+    cadence: daily
+    crawl_depth: 0
+    api_preferred: arxiv_api
+
+  - id: reuters_business
+    name: Reuters Business
+    source_tier: curated_news
+    topics: [finance, markets]
+    base_url: https://www.reuters.com/
+    crawl_url: https://www.reuters.com/business/
+    cadence: hourly
+    max_pages_per_domain: 150
+
+  - id: ap_business
+    name: AP Business
+    source_tier: curated_news
+    topics: [finance, markets]
+    base_url: https://apnews.com/
+    crawl_url: https://apnews.com/business
+    cadence: hourly
+    max_pages_per_domain: 150
+
+  - id: cnbc_markets
+    name: CNBC Markets
+    source_tier: curated_news
+    topics: [finance, markets]
+    base_url: https://www.cnbc.com/
+    crawl_url: https://www.cnbc.com/markets/
+    cadence: hourly
+    max_pages_per_domain: 150
+
+  - id: nasdaq_rss
+    name: Nasdaq RSS Feeds
+    source_tier: curated_news
+    topics: [finance, markets, stocks, options, modeling, finance_quant]
+    base_url: https://www.nasdaq.com/
+    crawl_url: https://www.nasdaq.com/nasdaq-RSS-Feeds
+    cadence: hourly
+    crawl_depth: 1
+    max_pages_per_domain: 150
+
+  - id: nyse_notices
+    name: NYSE Market Notices
+    source_tier: exchange_notice
+    topics: [finance, markets, market_structure, stocks, modeling, finance_quant]
+    base_url: https://www.nyse.com/
+    crawl_url: https://www.nyse.com/markets/nyse/notices
+    cadence: hourly
+    crawl_depth: 1
+    max_pages_per_domain: 100
+
+  - id: cboe_equities_notices
+    name: Cboe U.S. Equities Notices
+    source_tier: exchange_notice
+    topics: [finance, markets, market_structure, stocks, modeling, finance_quant]
+    base_url: https://www.cboe.com/
+    crawl_url: https://www.cboe.com/us/equities/notices/
+    cadence: hourly
+    crawl_depth: 1
+    max_pages_per_domain: 100
+
+  - id: cboe_options_notices
+    name: Cboe U.S. Options Notices
+    source_tier: exchange_notice
+    topics: [finance, markets, options, volatility, market_structure, modeling, finance_quant]
+    base_url: https://www.cboe.com/
+    crawl_url: https://www.cboe.com/us/options/notices/
+    cadence: hourly
+    crawl_depth: 1
+    max_pages_per_domain: 100
+
+  - id: cme_notices
+    name: CME Group Notices
+    source_tier: exchange_notice
+    topics: [finance, futures, commodities, rates, market_structure, modeling, finance_quant]
+    base_url: https://www.cmegroup.com/
+    crawl_url: https://www.cmegroup.com/notices.html
+    cadence: hourly
+    crawl_depth: 1
+    max_pages_per_domain: 100
+
+  - id: cme_rss
+    name: CME Group RSS Feeds
+    source_tier: exchange_notice
+    topics: [finance, futures, commodities, rates, market_structure, modeling, finance_quant]
+    base_url: https://www.cmegroup.com/
+    crawl_url: https://www.cmegroup.com/rss.html
+    cadence: daily
+    crawl_depth: 1
+
+  - id: a16z
+    name: Andreessen Horowitz
+    source_tier: vc_primary
+    topics: [ai, finance, vc, startups]
+    base_url: https://a16z.com/
+    crawl_url: https://a16z.com/
+    cadence: daily
+
+  - id: sequoia_articles
+    name: Sequoia Articles
+    source_tier: vc_primary
+    topics: [ai, finance, vc, startups]
+    base_url: https://www.sequoiacap.com/
+    crawl_url: https://www.sequoiacap.com/articles/
+    cadence: daily
+
+  - id: techcrunch_startups
+    name: TechCrunch Startups
+    source_tier: curated_news
+    topics: [ai, finance, vc, startups, technology]
+    base_url: https://techcrunch.com/
+    crawl_url: https://techcrunch.com/category/startups/
+    cadence: hourly
+    max_pages_per_domain: 150
+
+  - id: crunchbase_news
+    name: Crunchbase News
+    source_tier: curated_news
+    topics: [finance, vc, startups]
+    base_url: https://news.crunchbase.com/
+    crawl_url: https://news.crunchbase.com/
+    cadence: daily
+
+  - id: aqr_research
+    name: AQR Research
+    source_tier: institutional_research
+    topics: [finance, quant, hedge_funds, factor_investing, modeling, finance_quant]
+    base_url: https://www.aqr.com/
+    crawl_url: https://www.aqr.com/Insights/Research
+    cadence: daily
+    crawl_depth: 1
+    max_pages_per_domain: 120
+    trust_notes: Research/commentary, not trade signals; verify data and assumptions independently.
+
+  - id: man_institute
+    name: Man Institute
+    source_tier: institutional_research
+    topics: [finance, quant, hedge_funds, systematic, modeling, finance_quant]
+    base_url: https://www.man.com/
+    crawl_url: https://www.man.com/maninstitute
+    cadence: daily
+    crawl_depth: 1
+    max_pages_per_domain: 120
+
+  - id: man_numeric
+    name: Man Numeric Research
+    source_tier: institutional_research
+    topics: [finance, quant, hedge_funds, equities, systematic, modeling, finance_quant]
+    base_url: https://www.man.com/
+    crawl_url: https://www.man.com/maninstitute/man-numeric
+    cadence: daily
+    crawl_depth: 1
+    max_pages_per_domain: 80
+
+  - id: research_affiliates
+    name: Research Affiliates Insights
+    source_tier: institutional_research
+    topics: [finance, factor_investing, asset_allocation, modeling, finance_quant]
+    base_url: https://www.researchaffiliates.com/
+    crawl_url: https://www.researchaffiliates.com/
+    cadence: daily
+    crawl_depth: 1
+    max_pages_per_domain: 120
+
+  - id: robeco_quant
+    name: Robeco Quant Investing Insights
+    source_tier: institutional_research
+    topics: [finance, quant, factor_investing, equities, modeling, finance_quant]
+    base_url: https://www.robeco.com/
+    crawl_url: https://www.robeco.com/en-int/insights
+    cadence: daily
+    crawl_depth: 1
+    max_pages_per_domain: 120
+
+  - id: quantpedia_blog
+    name: Quantpedia Blog
+    source_tier: quant_research
+    topics: [finance, quant, trading_strategies, modeling, finance_quant]
+    base_url: https://quantpedia.com/
+    crawl_url: https://quantpedia.com/blog/
+    cadence: weekly
+    crawl_depth: 1
+    max_pages_per_domain: 80
+    trust_notes: Useful for research discovery; not primary data and not investment advice.
+
+  - id: alpha_architect_blog
+    name: Alpha Architect Blog
+    source_tier: quant_research
+    topics: [finance, quant, factor_investing, research, modeling, finance_quant]
+    base_url: https://alphaarchitect.com/
+    crawl_url: https://alphaarchitect.com/blog/
+    cadence: weekly
+    crawl_depth: 1
+    max_pages_per_domain: 80
+
+  - id: dimensional_insights
+    name: Dimensional Insights
+    source_tier: institutional_research
+    topics: [finance, factor_investing, asset_allocation, modeling, finance_quant]
+    base_url: https://www.dimensional.com/
+    crawl_url: https://www.dimensional.com/us-en/insights
+    cadence: weekly
+    crawl_depth: 1
+    max_pages_per_domain: 80
+
+  - id: msci_research
+    name: MSCI Research and Insights
+    source_tier: institutional_research
+    topics: [finance, indexes, risk_models, factor_investing, modeling, finance_quant]
+    base_url: https://www.msci.com/
+    crawl_url: https://www.msci.com/research-and-insights
+    cadence: weekly
+    crawl_depth: 1
+    max_pages_per_domain: 80
+
+  - id: sp_indexology
+    name: S&P Dow Jones Indexology Blog
+    source_tier: institutional_research
+    topics: [finance, indexes, factors, markets, modeling, finance_quant]
+    base_url: https://www.indexologyblog.com/
+    crawl_url: https://www.indexologyblog.com/
+    cadence: daily
+    crawl_depth: 1
+    max_pages_per_domain: 80
+
+  - id: ftse_russell_research
+    name: FTSE Russell Research and Insights
+    source_tier: institutional_research
+    topics: [finance, indexes, factors, asset_allocation, modeling, finance_quant]
+    base_url: https://www.lseg.com/
+    crawl_url: https://www.lseg.com/en/ftse-russell/research-insights
+    cadence: weekly
+    crawl_depth: 1
+    max_pages_per_domain: 80
+
+  - id: reuters_world
+    name: Reuters World
+    source_tier: curated_news
+    topics: [geopolitics]
+    base_url: https://www.reuters.com/
+    crawl_url: https://www.reuters.com/world/
+    cadence: hourly
+    max_pages_per_domain: 150
+
+  - id: ap_world
+    name: AP World News
+    source_tier: curated_news
+    topics: [geopolitics]
+    base_url: https://apnews.com/
+    crawl_url: https://apnews.com/world-news
+    cadence: hourly
+    max_pages_per_domain: 150
+
+  - id: bbc_world
+    name: BBC World
+    source_tier: curated_news
+    topics: [geopolitics]
+    base_url: https://www.bbc.com/
+    crawl_url: https://www.bbc.com/news/world
+    cadence: hourly
+    max_pages_per_domain: 150
+
+  - id: npr_world
+    name: NPR World
+    source_tier: curated_news
+    topics: [geopolitics]
+    base_url: https://www.npr.org/
+    crawl_url: https://www.npr.org/sections/world/
+    cadence: hourly
+    max_pages_per_domain: 150
+
+  - id: aljazeera_news
+    name: Al Jazeera News
+    source_tier: curated_news
+    topics: [geopolitics]
+    base_url: https://www.aljazeera.com/
+    crawl_url: https://www.aljazeera.com/news/
+    cadence: hourly
+    max_pages_per_domain: 150
+
+  - id: un_news
+    name: UN News
+    source_tier: official
+    topics: [government, geopolitics]
+    base_url: https://news.un.org/
+    crawl_url: https://news.un.org/en/
+    cadence: daily
+
+  - id: cfr
+    name: Council on Foreign Relations
+    source_tier: analysis
+    topics: [geopolitics]
+    base_url: https://www.cfr.org/
+    crawl_url: https://www.cfr.org/
+    cadence: daily
+    trust_notes: Treat as analysis; corroborate factual current-event claims with news or official sources.
+
+  - id: isw
+    name: Institute for the Study of War
+    source_tier: analysis
+    topics: [geopolitics, defense]
+    base_url: https://www.understandingwar.org/
+    crawl_url: https://www.understandingwar.org/
+    cadence: daily
+    trust_notes: Treat as analysis; useful for conflict timelines but not a sole source.
