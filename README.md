@@ -77,7 +77,7 @@ Verifiers grade the model's output against ground truth that doesn't require an 
 
 | Verifier | What it catches | How |
 |---|---|---|
-| `FormatVerifier` | Empty `answer` field, wrong shape (e.g. prose where a number was asked), surrounding quotes/markdown | Schema check + canonical-answer suggestion when the expected shape is known |
+| `FormatVerifier` | Empty `answer` field (returns an actionable `nudge` so the retry tick re-emits the answer in the right field) | Direct check on the proposed answer; a programmatic, GAIA-metadata-driven shape/canonical check is staged for a follow-up phase but not in the public build today |
 | `ArithmeticVerifier` | Wrong math in claims or reasoning ("47 × 83 = 3801" when it's 3901) | Regex out every equality, safe-AST re-evaluate the LHS, compare to asserted RHS within tolerance |
 | `CitationVerifier` | Claims whose cited evidence doesn't actually contain the claimed numbers; broken `evidence_id` references | Jaccard token overlap + per-number substring/tolerance check; refetches empty URL evidence through the HTTP cache |
 | `CoverageVerifier` | Factual claims with no supporting evidence at all | Structural: every Claim that reads factual must have `supports: [evidence_id, …]` non-empty |
@@ -148,7 +148,7 @@ python -m banna_agent.benchmarks.gaia.runner \
 ```
 $ banna --policy verifier_retry --provider openai --model gpt-5-nano
 
-● banna · v0.1.0   provider=openai   model=gpt-5-nano   policy=verifier_retry
+● banna · v0.1.1   provider=openai   model=gpt-5-nano   policy=verifier_retry
 
 > How many studio albums did Mercedes Sosa release between 2000 and 2009?
 
@@ -199,7 +199,7 @@ Diagnosed from a full GAIA validation run on `gpt-5-nano`. Each fix lands as a s
 
 ## GAIA validation results
 
-> The fixes are landed and tested (562 tests passing in this public repo, 568 in the private superset). The post-fix re-run on GAIA validation is the next thing on the queue.
+> The fixes are landed and tested (780 tests passing in the public build). A full GAIA post-fix re-run on `gpt-5-nano` is in progress and the numbers below will be populated from `docs/evals/gaia_c1_c6_report.md` when it completes.
 
 | Run | Provider · model | Policy | Set | Accuracy | Notes |
 |-----|------------------|--------|-----|----------|-------|
@@ -230,8 +230,18 @@ Tests live in `tests/` and are organized to mirror `src/`. Run them with:
 pytest -q
 ```
 
-Current status: **562 passed, 0 failed** on this public branch (no external substrate dependencies).
+Current status: **780 passed, 0 failed** on this public branch (no external substrate dependencies).
+
+## Limitations
+
+Honest self-assessment — what this codebase is *not*:
+
+- **No OS-level isolation for code execution.** `python_sandbox` runs untrusted model-emitted Python via `exec()` against a restricted namespace; `run_shell` uses a regex allowlist on the command string. Both run in the same OS process as the agent and inherit the user's filesystem, network, and credentials. If the namespace filter has a hole, a malicious or buggy script can read `~/.ssh/`, write any file the user can write, or open outbound network connections. **Acceptable for a research harness on the developer's own machine; not safe for executing untrusted user input or running unattended on shared infrastructure.** Tracked follow-up: Docker-backed `python_sandbox` with `--sandbox=docker|process|none` and a curated base image. Expected in a future minor release.
+- **The verifier suite catches structural failures, not factual ones.** `CitationVerifier` checks whether the model's claim is *defensible against the evidence it cited*, not whether the cited evidence is *actually true*. A coherent answer grounded in a wrong Wikipedia revision passes the verifier and fails GAIA.
+- **No multi-agent coordination.** This is a single-agent loop. Tasks that need delegation across specialized agents (e.g. a planner + a critic + an executor as separate processes) are out of scope.
+- **No streaming / interactive tool use.** Tools are synchronous `dict → dict`. Long-running tools (e.g. headless-browser sessions, multi-turn shells) would need a redesign.
+- **GAIA-flavored.** The verifiers, tool registry, and budget defaults are tuned for the GAIA benchmark's distribution (open-domain factoids + attachments). Adapting to other benchmarks (e.g. SWE-Bench, MMLU-Pro) would mean reworking the verifier set and adding domain tools.
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
