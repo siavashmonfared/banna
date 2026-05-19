@@ -14,53 +14,90 @@ No LangChain, no LlamaIndex, no smolagents in the core. The reasoning loop is a 
 
 ## Architecture
 
-```mermaid
-flowchart TB
-    Q[User question<br/>+ optional attachment] --> AG[Agent.run_policy]
+The agent is a **typed transition function** over an `AgentState`. A `Policy` proposes the next `Action`; the driver executes it (LLM call, tool invocation, or terminal commit); the resulting `Observation` is folded back into state; `Verifiers` score any proposed answer; a multi-axis `Budget` decides when to stop.
 
-    subgraph SUB[banna_agent runtime]
-      AG --> ST[AgentState<br/>typed: Trace · Evidence · Claim · Budget]
-      ST -->|propose| POL{Policy}
-
-      POL --> REACT[ReActPolicy]
-      POL --> VR[VerifierRetryPolicy<br/>wraps inner]
-      POL --> PL[PlannerReActPolicy]
-      POL --> BFS[BFS / DFS / Best-First<br/>over plans]
-      POL --> BON[BestOfNPolicy<br/>K trajectories + selector]
-
-      REACT -->|Action| EX[Execute]
-      VR -->|FINAL_ANSWER| VERS{Verifiers}
-      VERS -- pass --> COMMIT[commit]
-      VERS -- fail --> NUDGE[per-verifier nudge<br/>→ THINK feedback]
-      NUDGE --> POL
-
-      EX --> TOOLS[ToolRegistry]
-      TOOLS --> T1[search]
-      TOOLS --> T2[read_url]
-      TOOLS --> T3[read_file<br/>+ pdf / xlsx tools]
-      TOOLS --> T4[python_sandbox]
-      TOOLS --> T5[calculator]
-      TOOLS --> T6[run_shell · grep · list_files]
-
-      EX -->|observation| ST
-      ST --> BUD[BudgetTracker<br/>steps · repair_steps · wall · tokens · cost]
-      BUD -. trip .-> SYN[synthesize_on_exhaustion<br/>forced final_answer]
-      SYN --> COMMIT
-    end
-
-    subgraph VERIFIERS[Verifiers]
-      VF[FormatVerifier<br/>shape / empty answer]
-      VA[ArithmeticVerifier<br/>safe-AST recompute]
-      VC[CitationVerifier<br/>numeric + Jaccard support]
-      VG[CoverageVerifier<br/>claim ↔ evidence]
-    end
-    VERS --- VF
-    VERS --- VA
-    VERS --- VC
-    VERS --- VG
-
-    COMMIT --> ANS[answer]
 ```
+Action = THINK | TOOL_CALL(name, args) | FINAL_ANSWER(answer, evidence_ids)
+
+run_policy : AgentState × Policy × ToolRegistry × LLMClient → AgentState
+                ↑                                                ↓
+                └────── Policy.propose → execute → observe ──────┘
+```
+
+### State
+
+`AgentState` is the single immutable-ish object that every component reads and writes through:
+
+| Field | Type | What it holds |
+|---|---|---|
+| `trace` | `list[Step]` | Append-only log: `Step(idx, action, observation, wall_s, tokens, meta)`. The replay/audit primitive. |
+| `evidence` | `list[Evidence]` | Tool-fetched material with `evidence_id`. Search hits, URL bodies, PDF pages, file reads. Citations point here. |
+| `claims` | `list[Claim]` | Propositions the model has asserted, each with `supports: list[evidence_id]` and per-verifier verdicts. |
+| `budget` | `Budget` | Multi-axis tracker: `steps`, `repair_steps`, `wall_s`, `tokens`, `cost_usd`. Each axis can trip independently. |
+| `metadata` | `dict` | Policy-private state (planner plans, retry counters, frontier candidates, etc.). |
+
+### Tools
+
+Tools are `Callable[[dict], dict]` with a `ToolSpec` schema. Each one writes evidence into `state.evidence` and returns a deterministic dict the policy sees as its next observation.
+
+| Tool | Purpose | When the model picks it |
+|---|---|---|
+| `search` | Web search (DuckDuckGo / Bing / SerpAPI / YaCy backends) | Open-ended factoid questions, finding sources |
+| `read_url` | Fetch + clean HTML to text; HTTP cache aware | After `search` returns a promising link |
+| `read_file` | Generic local file read (text, with magic-byte sniffing) | GAIA attachment is a `.txt` / `.csv` / unknown blob |
+| `pdf_reader` | pypdf-based text extraction + optional pdfplumber tables | GAIA attachment is a PDF |
+| `xlsx_reader` | openpyxl-based sheet/cell access | GAIA attachment is an XLSX |
+| `python_sandbox` | Run user-supplied Python in a restricted exec | Multi-step arithmetic, parsing, data manipulation |
+| `calculator` | Single-expression safe-AST evaluator | Quick arithmetic where `python_sandbox` is overkill |
+| `grep`, `list_files` | Code-task primitives | Repo-shaped questions |
+| `run_shell` | Whitelisted shell with risky-command confirm | When file ops or process control is unavoidable |
+| `plan` | Records a structured plan into state | Used by `planner_react` and the `*_over_plans` policies |
+| `memory` | Reads/writes a persistent skill / fact store | When `--skills` enables the SkillLibrary |
+| `final_answer` | The terminal commit; takes `answer`, `reasoning`, `evidence_ids` | Always — plain-text replies are rejected |
+
+### Policies
+
+A `Policy` implements one method: `propose(state, llm, tools) → Action`. The driver doesn't care which strategy is running.
+
+| Policy | Mechanism | Best at | Cost vs. ReAct |
+|---|---|---|---|
+| `react` | One LLM call per tick; model picks `THINK` / `TOOL_CALL` / `FINAL_ANSWER` | Cheap baseline, latency-sensitive runs | 1× |
+| `planner_react` | Planner produces an ordered subtask list once; ReAct executes step-by-step against it | Multi-hop questions where wandering is expensive | ~1.1× (one extra planning call) |
+| `verifier_retry` | Wraps any inner policy. On `FINAL_ANSWER`, runs verifiers; on fail, converts to a THINK with per-verifier nudges so the inner policy retries. Up to `max_retries` (default 3). | Reducing the "looked right, was wrong" failure class | ~1.2–1.5× when retries fire |
+| `best_of_n` | K independent trajectories of `verifier_retry(react)`, then a selector (`majority_vote` for free or `llm_judge` for one extra call) picks the answer | Hardest tasks; trades $ for accuracy | ~K× |
+| `bfs_over_plans` | Propose K candidate plans; expand all by one step; score; keep the best frontier | Search-shaped problems with clear scoring | ~K× |
+| `dfs_over_plans` | Propose K plans; fully expand one before moving to the next | When a good plan exists and we want depth, not breadth | ~K× worst-case, often less |
+| `best_first_over_plans` | K plans; at each step, expand the highest-scored frontier node | Best-of-both: depth + pruning | ~K× worst-case |
+
+The wrapping is compositional — `best_of_n(verifier_retry(react))` is one line in the constructor. Adding a new policy is ~200 LOC because all of the substrate, verifiers, budgets, and tools come for free.
+
+### Verifiers
+
+Verifiers grade the model's output against ground truth that doesn't require an LLM — that's the point. Each returns a list of `ClaimCheck(claim_id, verdict ∈ {ok, fail, warn, skip}, detail, meta)`. On `fail`, `meta["nudge"]` is a verifier-specific actionable instruction that gets surfaced to the model on the retry tick.
+
+| Verifier | What it catches | How |
+|---|---|---|
+| `FormatVerifier` | Empty `answer` field, wrong shape (e.g. prose where a number was asked), surrounding quotes/markdown | Schema check + canonical-answer suggestion when the expected shape is known |
+| `ArithmeticVerifier` | Wrong math in claims or reasoning ("47 × 83 = 3801" when it's 3901) | Regex out every equality, safe-AST re-evaluate the LHS, compare to asserted RHS within tolerance |
+| `CitationVerifier` | Claims whose cited evidence doesn't actually contain the claimed numbers; broken `evidence_id` references | Jaccard token overlap + per-number substring/tolerance check; refetches empty URL evidence through the HTTP cache |
+| `CoverageVerifier` | Factual claims with no supporting evidence at all | Structural: every Claim that reads factual must have `supports: [evidence_id, …]` non-empty |
+| `CommandVerifier` (optional) | Code-task failures: failing tests, type errors, lint errors, build errors | Shells out to `pytest` / `mypy` / `ruff` in the sandbox; off by default for QA runs |
+
+The verifier suite is the research signal — the failures it catches are exactly the silent-but-wrong answers that pure ReAct accepts.
+
+### Budget
+
+`Budget` has five independently-tripping axes. The motivation: stuck-loop behavior shouldn't burn budget meant for productive work.
+
+| Axis | What it bounds | Tripped when |
+|---|---|---|
+| `steps_used` / `max_steps` | Productive ticks (`meta["repair"]` is not set) | Hard cap per task (12 / 18 / 24 on GAIA L1 / L2 / L3) |
+| `repair_steps_used` / `max_repair_steps` | Empty-reply, verifier-retry, and forced-tool-choice escape ticks | Stuck-loop protection; 6 by default |
+| `wall_s` | Wall-clock seconds since `t0` | Latency cap |
+| `tokens_in + tokens_out` | Cumulative LLM tokens | Cost proxy when explicit pricing is unknown |
+| `cost_usd` | Provider-priced cost | Hard $ cap per task |
+
+When any axis trips, the driver calls `policy.synthesize_on_exhaustion(state)` — one last forced-`final_answer` LLM call with a 15s timeout and a cheap fallback chain (last claim → last short text → none) — so the run commits something instead of returning `null`.
 
 ## Install
 
