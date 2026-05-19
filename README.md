@@ -62,25 +62,68 @@ flowchart TB
     COMMIT --> ANS[answer]
 ```
 
+## Install
+
+```bash
+# 1. From PyPI (once published)
+pip install banna-agent
+
+# 2. From GitHub directly (no clone, no PyPI required)
+pip install git+https://github.com/siavashmonfared/banna.git
+
+# 3. Isolated install with pipx (recommended for CLI use)
+pipx install git+https://github.com/siavashmonfared/banna.git
+
+# 4. From a local clone (for development)
+git clone https://github.com/siavashmonfared/banna.git
+cd banna
+pip install -e ".[dev]"
+```
+
+Any install path drops a `banna` (and `banna-agent`) executable on your `$PATH`.
+
 ## Quickstart
 
 ```bash
-git clone https://github.com/<you>/banna.git
-cd banna
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
-
 # set at least one provider key
-cp .env.example .env
-$EDITOR .env   # OPENAI_API_KEY=... (and/or ANTHROPIC_API_KEY=...)
+export OPENAI_API_KEY=sk-...        # or ANTHROPIC_API_KEY=... / GEMINI_API_KEY=...
 
-# run the CLI on a single question
-python -m banna_agent.cli.app --policy react --provider openai --model gpt-5-nano
+# open the interactive REPL
+banna --policy verifier_retry --provider openai --model gpt-5-nano
 
-# or run one GAIA Level-1 question
+# or run a single GAIA Level-1 question (no REPL)
 python -m banna_agent.benchmarks.gaia.runner \
     --policy verifier_retry --provider openai --model gpt-5-nano \
     --level 1 --n 1
+```
+
+### Example REPL session
+
+```
+$ banna --policy verifier_retry --provider openai --model gpt-5-nano
+
+● banna · v0.1.0   provider=openai   model=gpt-5-nano   policy=verifier_retry
+
+> How many studio albums did Mercedes Sosa release between 2000 and 2009?
+
+  thinking…
+  ▸ search(query="Mercedes Sosa discography studio albums 2000-2009")
+    ↳ 8 results · evidence_id ev_a3f
+  ▸ read_url(url="https://en.wikipedia.org/wiki/Mercedes_Sosa")
+    ↳ 12.4 kB · evidence_id ev_91c
+  thinking…
+  ▸ final_answer(answer="3", evidence_ids=["ev_a3f", "ev_91c"])
+  verifiers: format ✓  citation ✓  coverage ✓  arithmetic skip
+
+● banna
+  3
+
+  3 steps · 4.7s · 1840→210 tok · $0.0021
+
+> /show trace
+  …step-by-step dump of action + observation + meta…
+
+> /exit
 ```
 
 The full GAIA validation runner (165 questions across L1/L2/L3) is in `experiments/02_gaia_full/run.py`.

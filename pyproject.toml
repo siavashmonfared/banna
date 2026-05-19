@@ -3,13 +3,27 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "banna_agent"
+name = "banna-agent"
 version = "0.1.0"
 description = "A from-scratch, provider-agnostic reasoning agent with a typed state substrate and verifier-guided search. Primary benchmark: GAIA."
 readme = "README.md"
 requires-python = ">=3.10"
-authors = [{ name = "Siavash Monfared" }]
+authors = [{ name = "Siavash Monfared", email = "monfared@alum.mit.edu" }]
 license = { text = "MIT" }
+keywords = ["agent", "llm", "react", "verifier", "gaia", "reasoning", "anthropic", "openai", "gemini"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 
 dependencies = [
     "anthropic>=0.40",
@@ -27,6 +41,11 @@ dependencies = [
     "rich>=13.7",
 ]
 
+[project.urls]
+Homepage = "https://github.com/siavashmonfared/banna"
+Repository = "https://github.com/siavashmonfared/banna"
+Issues = "https://github.com/siavashmonfared/banna/issues"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
@@ -42,9 +61,8 @@ pdf = [
 ]
 
 [project.scripts]
+banna = "banna_agent.cli:main"
 banna-agent = "banna_agent.cli:main"
-myagent = "banna_agent.cli:main"
-myAgent = "banna_agent.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
