@@ -264,8 +264,13 @@ def _default_budget(task: GAIATask) -> Budget:
     # `repair=True` action.meta tag in policies/react.py), but a fatter
     # main budget still gives the model room to backtrack on hard L2/L3
     # tasks that legitimately need 10+ tool calls.
+    #
+    # C4b: wall budget bumped 120s → 240s to match. The 05-19 post-C1–C6
+    # run had 25/49 tasks tripping `budget_wall` at the 120s cap — bigger
+    # step caps without a matching wall cap meant tasks consumed more
+    # steps and then got cut off before they could finish.
     steps = {1: 12, 2: 18, 3: 24}.get(task.level, 14)
-    return Budget(max_steps=steps, max_wall_s=120.0)
+    return Budget(max_steps=steps, max_wall_s=240.0)
 
 
 _RICH_TOOL_HINTS: dict[str, str] = {

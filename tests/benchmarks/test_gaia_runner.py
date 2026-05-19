@@ -263,13 +263,14 @@ def test_format_question_omits_summary_when_introspection_fails(tmp_path: Path) 
 
 def test_default_budget_step_caps_match_post_c4() -> None:
     """C4 bumped the L1/L2/L3 step caps after the 05-16 nano run showed
-    19/27 budget_steps failures on L1. Pin the new defaults so a casual
-    refactor doesn't silently regress them."""
+    19/27 budget_steps failures on L1. C4b bumped the wall cap 120→240s
+    after the 05-19 post-C1–C6 run had 25/49 tasks tripping budget_wall."""
     from banna_agent.benchmarks.gaia.runner import _default_budget
     expected = {1: 12, 2: 18, 3: 24}
     for level, want in expected.items():
         b = _default_budget(GAIATask(task_id="t", question="?", level=level, answer="x"))
         assert b.max_steps == want, f"L{level} default step cap regressed"
+        assert b.max_wall_s == 240.0, f"L{level} default wall cap regressed (C4b)"
 
 
 def test_run_gaia_captures_policy_exceptions(tmp_path: Path) -> None:
