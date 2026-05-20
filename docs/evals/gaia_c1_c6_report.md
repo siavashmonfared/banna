@@ -11,7 +11,7 @@ This is the pre-/post-fix evaluation behind the README's "Failure modes & fixes"
 | Benchmark | GAIA validation, all three levels |
 | Tasks | 165 (53 L1 / 86 L2 / 26 L3) |
 | Model | `gpt-5-nano` (OpenAI) |
-| Policy | `verifier_retry` wrapping `react` |
+| Policies tested | `react + intrinsic` (pre & post-C1–C6b), `react` (bare — post-C1–C6b ablation row A); further ablation rows queued |
 | Provider | `openai` (real API, no mocks) |
 | Default budget — pre | steps 8 / 14 / 20 (L1/L2/L3), wall 120 s, cost unlimited |
 | Default budget — post | steps 12 / 18 / 24 (L1/L2/L3), wall **240 s**, cost cap $2.00/task |
@@ -91,14 +91,16 @@ The architecturally interesting deltas:
 
 For each ID, count of tasks that exited the loop with that `budget_reason`:
 
-| Code | budget_reason | Pre-fix | Post-fix | Diagnosis |
+All counts are for `react + intrinsic` (the policy on which the C1–C6 fixes were diagnosed). See the *Exit distribution* table above for the post-fix bare-`react` counts.
+
+| Code | budget_reason | Pre-fix | Post-fix (`react + intrinsic`) | Diagnosis |
 |---|---|---|---|---|
-| — | `ok` (finished cleanly) | _baseline_ | _populated_ | The dominant healthy path |
-| — | `budget_steps` | 27 (L1: 19) | _populated_ | Step cap; addressed by C4 |
-| C1 | `budget_repair_steps` (new axis) | n/a | _populated_ | Catches `[empty_reply]` loops + verifier-retry storms before they eat productive steps |
-| — | `budget_wall` | _baseline_ | _populated_ | Wall cap; addressed by C4b |
-| — | `budget_tokens` | _baseline_ | _populated_ | |
-| C3 | `pred_answer = null` on exit | 22 | _populated_ | Budget-exhaustion synthesis should drive to 0 |
+| — | `ok` (finished cleanly) | ~110 / 165 | **138 / 165** | The dominant healthy path |
+| — | `budget_steps` | 27 (L1: 19) | **2** | Step cap; near-eliminated by C4 |
+| C1 | `budget_repair_steps` (new axis) | n/a | **12** | New tripwire catches `[empty_reply]` loops + verifier-retry storms before they eat productive steps |
+| — | `budget_wall` | 25 / 49 (partial C4-only run) | **13** | Wall cap; C4b raised 120 → 240 s |
+| — | `budget_tokens` | 0 | 0 | Never binding on this set |
+| C3 | `pred_answer = null` on exit | 22 | **3** | Budget-exhaustion synthesis hook firing (~87 % reduction) |
 
 ## The seven fixes
 
