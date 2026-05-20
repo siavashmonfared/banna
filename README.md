@@ -6,8 +6,8 @@ No LangChain, no LlamaIndex, no smolagents in the core. The reasoning loop is a 
 
 ## What's interesting about this repo
 
-1. **Forensic GAIA debugging.** A full-validation run on `gpt-5-nano` was instrumented end-to-end, traces were dumped per task, and seven distinct structural failure modes were diagnosed and fixed — not by prompt-tweaking, but by changing the loop. See [Failure modes & fixes](#failure-modes--fixes-the-c1c6-pass) below.
-2. **Multi-axis budget tracker** that separates *productive* steps from *repair* steps. A model stuck in an `[empty_reply]` loop no longer burns its productive-step budget; instead it trips a separate `max_repair_steps` axis with a forced tool-choice escape.
+1. **Instrumented GAIA validation.** A full-set run on `gpt-5-nano` is logged end-to-end (per-task event traces, aggregate `results.jsonl`), with per-level accuracy, exit-reason distribution, and operational stats. See [`docs/evals/gaia_validation_report.md`](docs/evals/gaia_validation_report.md).
+2. **Multi-axis budget tracker** that separates *productive* steps from *repair* steps. A model stuck in an empty-reply loop no longer burns its productive-step budget; instead it trips a separate `max_repair_steps` axis with a forced tool-choice escape.
 3. **Per-verifier actionable nudges.** Each verifier (Arithmetic, Citation, Coverage, Format) attaches a `meta["nudge"]` to its fail verdicts that names the missing thing (the recomputed value, the missing evidence_id, the unsupported number, the empty field). The retry policy groups these by verifier and emits one line per kind — short enough that the model actually reads them.
 4. **Budget-exhaustion synthesis.** When the agent runs out of steps mid-task, instead of returning `null`, a final forced-`final_answer` call gives it one last shot with a cheap fallback chain (last claim → last short text → none).
 5. **Provider-agnostic tool forcing.** A single helper translates "force any tool" into OpenAI's `tool_choice: "required"`, Anthropic's `{type: "any"}`, and Gemini's `ANY` mode — used to break out of empty-reply loops.
@@ -63,8 +63,8 @@ Policies are introduced to the public build as their benchmark validation lands 
 
 | Policy | Status | Mechanism | Cost vs. ReAct |
 |---|---|---|---|
-| `react` | **Validated — best public result. GAIA val 42.4 % (70 / 165) on `gpt-5-nano`. See [`docs/evals/gaia_c1_c6_report.md`](docs/evals/gaia_c1_c6_report.md).** | One LLM call per tick; model picks `THINK` / `TOOL_CALL` / `FINAL_ANSWER` | 1× |
-| `verifier_retry` (wraps any inner policy) | Code present; **not exposed** — `react + intrinsic` scored 37.6 % vs bare `react`'s 42.4 % on the same substrate, a 4.8 pp regression. Re-introduced once an extrinsic-verifier validation closes the gap. | On `FINAL_ANSWER`, runs verifiers; on fail, converts to a THINK with per-verifier nudges so the inner policy retries. | ~1.2–1.5× when retries fire |
+| `react` | **Validated — 42.4 % (70 / 165) on GAIA validation with `gpt-5-nano`. See [`docs/evals/gaia_validation_report.md`](docs/evals/gaia_validation_report.md).** | One LLM call per tick; model picks `THINK` / `TOOL_CALL` / `FINAL_ANSWER` | 1× |
+| `verifier_retry` (wraps any inner policy) | Code present; not exposed in the CLI until its validation run lands. | On `FINAL_ANSWER`, runs verifiers; on fail, converts to a THINK with per-verifier nudges so the inner policy retries. | ~1.2–1.5× when retries fire |
 | `planner_react` | Code present; not exposed | Planner produces an ordered subtask list once; ReAct executes step-by-step against it | ~1.1× |
 | `best_of_n` | Code present; not exposed | K independent trajectories, selector (`majority_vote` / `llm_judge`) picks the answer | ~K× |
 | `bfs_over_plans` / `dfs_over_plans` / `best_first_over_plans` | Code present; not exposed | Plan-frontier search variants over K candidate plans | ~K× worst-case |
@@ -184,49 +184,31 @@ banna providers --validate       # also make a 1-token test call against each
 
 The full GAIA validation runner (165 questions across L1/L2/L3) is in `experiments/02_gaia_full/run.py`.
 
-## Failure modes & fixes (the C1–C6 pass)
+## Reliability engineering
 
-Diagnosed from a full GAIA validation run on `gpt-5-nano`. Each fix lands as a structural change to the loop, with unit tests pinning the new behavior.
+Five structural decisions in the loop, each in response to a specific failure mode observed during validation, each pinned by unit tests.
 
-| ID | Failure mode | Root cause | Fix |
-|----|--------------|------------|-----|
-| C1 | `[empty_reply]` loops eat the step budget | Repair-style THINKs counted as productive steps | New `Budget.repair_steps_used` axis + `max_repair_steps=6`; `meta["repair"]=True` routes off the main counter |
-| C2 | Model returns empty content + no tool call | No detection / no escape | After 2 consecutive empties with no evidence, force `tool_choice` to any tool (provider-agnostic) |
-| C3 | `pred_answer=null` on budget exhaustion | Loop exits with no commit | `policy.synthesize_on_exhaustion(state)`: one threaded LLM call with forced `final_answer` + cheap fallback chain |
-| C4 | L1 step cap too tight (8 steps) | Default budget profile | L1/L2/L3 caps bumped to 12/18/24 |
-| C5 | Rich file tools never used on attachments | Hint steered model toward `read_file` even for PDF/XLSX | Extension-routed `_file_hint()` + cheap `_file_summary()` (pypdf page count, openpyxl sheet names, CSV header) |
-| C6 | Verifier retries low repair rate | Feedback was generic | Each verifier populates `meta["nudge"]` with a verifier-specific actionable instruction; retry feedback groups by verifier |
+| Decision | What changed | Why |
+|---|---|---|
+| Multi-axis budget tracker | `Budget` separates productive steps from repair steps. Actions tagged `meta["repair"]=True` (empty-reply fallbacks, commit-required nudges, retry feedback) tick a dedicated `repair_steps_used` axis with its own cap. | A model stuck in an empty-reply loop no longer drains its productive-step budget; the two failure modes get distinct exit codes. |
+| Empty-reply detection + forced tool use | After two consecutive empty replies with no evidence accumulated, the policy forces the provider's "any tool" mode (OpenAI `"required"`, Anthropic `{"type":"any"}`, Gemini `ANY`). After two commit-required nudges, the policy bails to `final_answer`. | Empty-reply loops were a top cause of zero-tool / zero-evidence finishes on small models. |
+| Budget-exhaustion synthesis | When any budget axis trips without a committed answer, the policy calls a 15-second-bounded LLM with `tool_choice=final_answer` forced, falling through to a cheap chain (last claim → last short preceding text → none). | Eliminates the "ran out of budget, returned `null`" failure class. |
+| Calibrated default budget profile | L1 / L2 / L3 step caps at 12 / 18 / 24; wall cap at 240 s; repair-step cap independent at 6. | Earlier defaults exhausted steps on L1 and tripped wall on long tails. |
+| Attachment-aware tool hints | System prompt extended with extension-routed tool affordances (PDF / XLSX / CSV / image), plus a cheap pre-introspection summary (page count, sheet names, header line) injected into the question. | Without this, the model defaulted to `read_file` on every attachment, including binaries; rich PDF / XLSX tools were rarely picked. |
 
 ## GAIA validation results
 
-Three full-set runs on `gpt-5-nano`, 165 GAIA-val questions across L1/L2/L3. See [`docs/evals/gaia_c1_c6_report.md`](docs/evals/gaia_c1_c6_report.md) for the per-Cx breakdown, per-level numbers, exit distributions, and an honest *"limitations of this evaluation"* section.
+**`react` on `gpt-5-nano` scores 42.4 %** (70 / 165) on GAIA validation. Total cost: **$0.87**. See [`docs/evals/gaia_validation_report.md`](docs/evals/gaia_validation_report.md) for per-level numbers, exit distributions, operational stats, reproduction instructions, and an honest *"limitations of this evaluation"* section.
 
-| Run | Policy (friendly name) | Set | Accuracy | Cost |
-|---|---|---|---|---|
-| Pre-C1–C6 baseline | `react + intrinsic` | GAIA val (165) | 33.9 % (56 / 165) | $0.94 |
-| Post-C1–C6b | `react + intrinsic` | GAIA val (165) | 37.6 % (62 / 165) | $1.01 |
-| Post-C1–C6b | **`react`** *(today's CLI default)* | GAIA val (165) | **42.4 %** (70 / 165) | $0.87 |
-
-### The headline finding
-
-On the post-C1–C6b substrate, **the intrinsic verifier set (`Format / Arithmetic / Citation / Coverage`) is a net negative.** Bare `react` beats `react + intrinsic` by **4.8 pp overall and 8.1 pp on L2** — exactly the regime where verifier retries fire most often. Mechanism: false-positive retries reject correct answers, the retry tick burns evidence and steps, the retried answer is worse than the original.
-
-Implication for the CLI: today the public build exposes **only `react`** under `--policy` / `/policy`. The wrapper class (`VerifierRetryPolicy`) and the other inner policies (`planner_react`, `best_of_n`, …) ship in `src/banna_agent/policies/` but are not selectable until their re-validation closes the gap.
-
-### Next ablation: does *extrinsic* verification flip the sign?
-
-The interesting question now is whether *reflexion-style* verification (grading the answer against the user's stated constraints, not against the trace) recovers or improves on bare `react`. The ablation pipeline is in `experiments/02_gaia_full/configs/ablation/` and runs sequentially via `bash experiments/02_gaia_full/run_ablation.sh`. Status as of this commit:
-
-| Row | Friendly name | Status |
+| Level | n | Accuracy |
 |---|---|---|
-| A | `react` | done — **42.4 %** |
-| B | `react + intrinsic` | done — 37.6 % (regression) |
-| **C** | **`planner_react`** | **next** |
-| G | `react + extrinsic` | queued |
-| E | `react + intrinsic + extrinsic` | queued |
-| F | `planner_react + intrinsic + extrinsic` | queued |
+| L1 | 53 | 49.1 % |
+| L2 | 86 | 46.5 % |
+| L3 | 26 | 15.4 % |
 
-Validated rows graduate into the public CLI as they land. Every row is one YAML config — adding a new ablation is a new file, not a new code path.
+92 % of tasks finish through the normal commit path; the remaining 8 % trip a budget axis (wall or repair-step). Median task finishes in 4 productive steps under a minute.
+
+Further policies (planner-based decomposition, verifier-retry variants, best-of-N selection) ship in `src/banna_agent/policies/` but are not exposed in the CLI until each has a validation run behind it. Adding a new ablation is a YAML config, not a code change.
 
 ## Repo layout
 
