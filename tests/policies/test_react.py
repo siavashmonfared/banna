@@ -53,6 +53,21 @@ def _tool_reply(name: str, args: dict) -> LLMReply:
     )
 
 
+def _multi_tool_reply(calls: list[tuple[str, dict]]) -> LLMReply:
+    """Reply with ≥2 tool_use blocks in one response (parallel tool use)."""
+    content = [
+        ContentBlock(kind="tool_use", id=f"t{i}", name=name, arguments=args)
+        for i, (name, args) in enumerate(calls)
+    ]
+    return LLMReply(
+        provider="scripted",
+        model="s-1",
+        content=content,
+        stop_reason="tool_use",
+        usage=Usage(tokens_in=20, tokens_out=5),
+    )
+
+
 def _calc_tools() -> ToolRegistry:
     return ToolRegistry([make_calculator_tool()])
 
@@ -69,6 +84,58 @@ def test_propose_emits_tool_call_when_llm_calls_tool() -> None:
     assert action.kind == ActionKind.TOOL_CALL
     assert action.tool_name == "calculator"
     assert action.tool_args == {"expression": "2+2"}
+
+
+def test_propose_emits_tool_batch_when_llm_emits_two_tool_calls() -> None:
+    """≥2 tool_use blocks in one reply → ActionKind.TOOL_BATCH with both
+    sub-calls in meta['batch_calls']. The driver will parallel-dispatch."""
+    llm = _ScriptedLLM([
+        _multi_tool_reply([
+            ("calculator", {"expression": "1+1"}),
+            ("calculator", {"expression": "2+2"}),
+        ]),
+    ])
+    state = AgentState(question="?")
+    action = ReActPolicy().propose(state, llm=llm, tools=_calc_tools())
+    assert action.kind == ActionKind.TOOL_BATCH
+    batch = action.meta["batch_calls"]
+    assert len(batch) == 2
+    assert {b["name"] for b in batch} == {"calculator"}
+    exprs = sorted(b["args"]["expression"] for b in batch)
+    assert exprs == ["1+1", "2+2"]
+    assert action.meta["batch_names"] == ["calculator", "calculator"]
+
+
+def test_propose_does_not_batch_when_final_answer_is_in_the_calls() -> None:
+    """`final_answer` is the terminal commit; never batch it with anything else.
+    Falls back to single-call path (first call wins)."""
+    llm = _ScriptedLLM([
+        _multi_tool_reply([
+            ("calculator", {"expression": "1+1"}),
+            ("final_answer", {"answer": "2"}),
+        ]),
+    ])
+    state = AgentState(question="?")
+    action = ReActPolicy().propose(state, llm=llm, tools=_calc_tools())
+    assert action.kind != ActionKind.TOOL_BATCH
+    # First-call path is preserved.
+    assert action.kind == ActionKind.TOOL_CALL
+    assert action.tool_name == "calculator"
+
+
+def test_propose_dedups_identical_batch_calls_and_falls_back_to_single() -> None:
+    """If the model echoes the same (name, args) twice, dedup; if it collapses
+    to one call, fall through to the regular TOOL_CALL path."""
+    llm = _ScriptedLLM([
+        _multi_tool_reply([
+            ("calculator", {"expression": "1+1"}),
+            ("calculator", {"expression": "1+1"}),
+        ]),
+    ])
+    state = AgentState(question="?")
+    action = ReActPolicy().propose(state, llm=llm, tools=_calc_tools())
+    assert action.kind == ActionKind.TOOL_CALL
+    assert action.tool_args == {"expression": "1+1"}
 
 
 def test_propose_emits_final_answer_when_llm_only_text() -> None:
@@ -503,6 +570,37 @@ def test_synthesize_calls_llm_with_forced_final_answer_when_provided() -> None:
     assert action.answer == "4"
     assert (action.meta or {}).get("synthesis") == "llm"
     assert len(llm.calls) == 1
+
+
+def test_synthesize_skips_empty_reply_marker_in_cheap_fallback() -> None:
+    """A trace where every tick was an empty-reply repair must not commit
+    the `[empty_reply] ...` marker string as the final answer. Earlier
+    versions did, and those tasks scored zero on GAIA.
+    """
+    from banna_agent.core.types import Action, ActionKind, Observation
+    state = AgentState(question="?")
+    # 3 empty-reply repair THINKs in a row, nothing else.
+    for _ in range(3):
+        state.append_step(
+            Action(
+                kind=ActionKind.THINK,
+                text="[empty_reply] model returned no text and no tool_calls",
+                meta={"empty_reply": True, "repair": True},
+            ),
+            Observation(ok=True),
+        )
+    action = ReActPolicy().synthesize_on_exhaustion(state)
+    assert action is None  # no real candidate; refuse to fabricate one
+
+
+def test_synthesize_skips_empty_reply_marker_in_claim_text() -> None:
+    """Even if the marker somehow lands in claim text, it must be skipped."""
+    state = AgentState(question="?")
+    state.add_claim(text="[empty_reply] model returned no text and no tool_calls")
+    state.add_claim(text="real-answer")
+    action = ReActPolicy().synthesize_on_exhaustion(state)
+    assert action is not None
+    assert action.answer == "real-answer"
 
 
 def test_synthesize_falls_back_to_cheap_on_llm_failure() -> None:

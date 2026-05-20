@@ -164,7 +164,161 @@ def _execute(
                 inv.result["evidence_id"] = ev.evidence_id
         return obs
 
+    if action.kind == ActionKind.TOOL_BATCH:
+        return _execute_batch(state, action, tools, log)
+
     raise ValueError(f"unknown ActionKind: {action.kind}")
+
+
+def _auto_register_evidence(
+    state: AgentState, tool_name: str, result: Any, step_idx: int,
+) -> None:
+    """Mirror of the single-tool evidence auto-registration, factored out
+    so the batch dispatcher can call it per sub-result.
+    """
+    if not isinstance(result, dict):
+        return
+    hits = result.get("hits")
+    if isinstance(hits, list):
+        for h in hits:
+            if isinstance(h, dict) and h.get("url"):
+                ev = state.add_evidence(
+                    source=h["url"],
+                    content=h.get("snippet") or h.get("title") or "",
+                    origin_step=step_idx,
+                    meta={"tool": tool_name, "title": h.get("title", "")},
+                )
+                h["evidence_id"] = ev.evidence_id
+        return
+    if result.get("url"):
+        ev = state.add_evidence(
+            source=result["url"],
+            content=(result.get("title") or "") + "\n" + (result.get("text") or "")[:1000],
+            origin_step=step_idx,
+            meta={"tool": tool_name},
+        )
+        result["evidence_id"] = ev.evidence_id
+
+
+def _execute_batch(
+    state: AgentState,
+    action: Action,
+    tools: ToolRegistry,
+    log: EventLog | None,
+) -> Observation:
+    """Dispatch a TOOL_BATCH action: run all sub-calls in parallel.
+
+    Sub-calls live in ``action.meta["batch_calls"]`` as a list of
+    ``{"name": str, "args": dict}``. We use a small ThreadPoolExecutor —
+    each tool call is usually a network round-trip, so threads are the
+    right concurrency primitive (the GIL is released around I/O).
+
+    Returns one combined Observation:
+      - ``ok`` = all sub-calls succeeded
+      - ``data["batch"]`` = list of {name, ok, result, error, wall_s}
+      - ``wall_s`` = max of sub-call wall times (wall-clock, not summed)
+
+    Each sub-call still emits its own TOOL_CALL + TOOL_RESULT event so
+    existing log consumers / display code keep working unchanged. The
+    new ``TOOL_BATCH`` event brackets the group.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    raw_calls = (action.meta or {}).get("batch_calls") or []
+    calls: list[dict[str, Any]] = []
+    for c in raw_calls:
+        if isinstance(c, dict) and c.get("name"):
+            calls.append({"name": str(c["name"]), "args": dict(c.get("args") or {})})
+    if not calls:
+        return Observation(ok=True, wall_s=0.0)
+
+    step_idx = len(state.trace.steps)
+    names = [c["name"] for c in calls]
+    emit(
+        log,
+        run_id=state.trace.run_id,
+        step=step_idx,
+        kind=EventKind.TOOL_BATCH,
+        tool_names=names,
+        n=len(calls),
+    )
+
+    def _run_one(call: dict[str, Any]) -> dict[str, Any]:
+        name = call["name"]
+        args = call["args"]
+        tool = tools.get(name)
+        if tool is None:
+            available = ", ".join(sorted(tools.names())) or "(none)"
+            err = (
+                f"unknown tool: {name!r}. "
+                f"This tool is not registered. Available tools: {available}."
+            )
+            return {"name": name, "ok": False, "result": None,
+                    "error": err, "wall_s": 0.0, "args": args}
+        inv = invoke_tool(tool, args)
+        return {"name": name, "ok": inv.ok, "result": inv.result,
+                "error": inv.error, "wall_s": inv.wall_s, "args": args}
+
+    # Cap parallelism. 5 is enough for the GAIA-shaped workloads we see
+    # (1–3 read_url/search in a batch); raising it further risks rate
+    # limits on the provider side.
+    max_workers = max(1, min(len(calls), 5))
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        results = list(pool.map(_run_one, calls))
+
+    # Re-emit per-call TOOL_CALL/TOOL_RESULT events in submission order so
+    # log consumers see a deterministic sequence.
+    all_ok = True
+    max_wall = 0.0
+    for r in results:
+        emit(
+            log,
+            run_id=state.trace.run_id,
+            step=step_idx,
+            kind=EventKind.TOOL_CALL,
+            tool_name=r["name"],
+            arguments=r["args"],
+            in_batch=True,
+        )
+        emit(
+            log,
+            run_id=state.trace.run_id,
+            step=step_idx,
+            kind=EventKind.TOOL_RESULT,
+            ok=r["ok"],
+            wall_s=r["wall_s"],
+            error=r["error"],
+            preview=_brief_tool_result(r["result"], r["ok"]),
+            in_batch=True,
+        )
+        if r["ok"]:
+            _auto_register_evidence(state, r["name"], r["result"], step_idx)
+        else:
+            all_ok = False
+        if r["wall_s"] and r["wall_s"] > max_wall:
+            max_wall = r["wall_s"]
+
+    # Slim payload: drop full sub-results from `data` to keep the
+    # Observation small. Each sub-call's tool output is already on the
+    # tool result events; what the policy needs back is the summary list.
+    summary = [
+        {"name": r["name"], "ok": r["ok"], "error": r["error"],
+         "wall_s": r["wall_s"], "result": r["result"]}
+        for r in results
+    ]
+    _t_in = int((action.meta or {}).get("tokens_in") or 0)
+    _t_out = int((action.meta or {}).get("tokens_out") or 0)
+    return Observation(
+        ok=all_ok,
+        text=None,
+        data={"batch": summary, "n": len(summary)},
+        error=None if all_ok else "; ".join(
+            f"{r['name']}: {r['error']}" for r in results if not r["ok"]
+        ),
+        wall_s=max_wall,
+        tokens_in=_t_in,
+        tokens_out=_t_out,
+    )
 
 
 def run_policy(

@@ -37,6 +37,7 @@ class EventKind:
     LLM_CALL = "llm_call"           # an LLMReply was observed
     TOOL_CALL = "tool_call"         # a tool was invoked
     TOOL_RESULT = "tool_result"     # a tool returned
+    TOOL_BATCH = "tool_batch"       # ≥2 tools dispatched concurrently (boundary marker)
     OBSERVATION = "observation"     # a Step was appended
     BUDGET = "budget"               # budget state changed
     VERIFIER = "verifier"           # a verifier ran

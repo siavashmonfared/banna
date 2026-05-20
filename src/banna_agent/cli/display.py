@@ -92,6 +92,10 @@ class StreamingEventLog(EventLog):
             prefix = self._step_prefix(ev.step)
             if action_kind == "tool_call":
                 self._update_status(f"[cyan]running[/cyan] [bold]{tool}[/bold]…")
+            elif action_kind == "tool_batch":
+                # The TOOL_BATCH event renders the parallel banner; the
+                # PROPOSE event for the same step would just duplicate it.
+                self._update_status("[magenta]dispatching parallel batch[/magenta]…")
             elif action_kind == "think":
                 if is_err:
                     self.console.print(
@@ -114,13 +118,33 @@ class StreamingEventLog(EventLog):
                 self._update_status("[dim]finalizing…[/dim]")
             return
 
+        if kind == EventKind.TOOL_BATCH:
+            names = p.get("tool_names") or []
+            n = int(p.get("n") or len(names))
+            prefix = self._step_prefix(ev.step)
+            names_s = ", ".join(f"[bold]{name}[/bold]" for name in names) or "?"
+            # ⫶ = three vertical dots — visually distinct from the single
+            # ▸ tool-call arrow, suggests "parallel lanes".
+            self.console.print(
+                f"{prefix}[magenta]⫶ parallel ×{n}:[/magenta] {names_s}"
+            )
+            self._update_status(
+                f"[magenta]parallel[/magenta] [bold]{', '.join(names)}[/bold]…"
+            )
+            return
+
         if kind == EventKind.TOOL_CALL:
             tool = p.get("tool_name") or "?"
             args = p.get("arguments") or {}
             args_s = _short_args(args) if self.show_args else ""
             prefix = self._step_prefix(ev.step)
+            # When this call is one of a parallel batch we already printed
+            # the magenta ⫶ banner above; indent the per-call line so the
+            # group is visually grouped instead of looking like serial calls.
+            indent = "    " if p.get("in_batch") else ""
             self.console.print(
-                f"{prefix}[cyan]▸[/cyan] [bold]{tool}[/bold]({args_s})"
+                f"{indent}{prefix if not p.get('in_batch') else ''}"
+                f"[cyan]▸[/cyan] [bold]{tool}[/bold]({args_s})"
             )
             return
 
@@ -129,14 +153,17 @@ class StreamingEventLog(EventLog):
             wall = float(p.get("wall_s") or 0.0)
             err = p.get("error")
             preview = (p.get("preview") or "").strip()
+            # Extra indent when this result is one of a parallel batch —
+            # matches the TOOL_CALL banner indent above.
+            indent = "    " if p.get("in_batch") else "  "
             if ok:
                 preview_part = f"[white]{_short(preview, 100)}[/white] " if preview else ""
                 self.console.print(
-                    f"  [green]✓[/green] {preview_part}[dim]({wall:.1f}s)[/dim]"
+                    f"{indent}[green]✓[/green] {preview_part}[dim]({wall:.1f}s)[/dim]"
                 )
             else:
                 self.console.print(
-                    f"  [red]✗[/red] [red]{_short(err or 'failed', 80)}[/red]"
+                    f"{indent}[red]✗[/red] [red]{_short(err or 'failed', 80)}[/red]"
                     f" [dim]({wall:.1f}s)[/dim]"
                 )
             return

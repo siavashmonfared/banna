@@ -183,6 +183,139 @@ class _CrashingPolicy:
         raise RuntimeError("nope")
 
 
+# ---------------------------------------------------------------------------
+# Parallel tool dispatch (TOOL_BATCH)
+# ---------------------------------------------------------------------------
+
+
+def _slow_tool(name: str, delay_s: float, returns: dict) -> JsonTool:
+    """A JsonTool whose handler sleeps `delay_s` then returns `returns`."""
+    import time
+
+    def _h(_: dict) -> dict:
+        time.sleep(delay_s)
+        return dict(returns)
+
+    return JsonTool(
+        name=name,
+        description=f"slow tool {name}",
+        input_schema={"type": "object", "properties": {}},
+        handler=_h,
+    )
+
+
+def test_tool_batch_runs_calls_concurrently() -> None:
+    """Two 0.15s tools dispatched as a batch should finish in ~0.15s, not 0.3s."""
+    import time
+
+    a = _slow_tool("a", 0.15, {"value": 1})
+    b = _slow_tool("b", 0.15, {"value": 2})
+    policy = _ScriptedPolicy([
+        Action(
+            kind=ActionKind.TOOL_BATCH,
+            meta={"batch_calls": [
+                {"name": "a", "args": {}},
+                {"name": "b", "args": {}},
+            ]},
+        ),
+        Action(kind=ActionKind.FINAL_ANSWER, answer="done"),
+    ])
+    state = AgentState(question="?", budget=Budget(max_steps=5, max_wall_s=5.0))
+    log = EventLog()
+    t0 = time.monotonic()
+    state = run_policy(state, policy, llm=_DummyLLM(),
+                       tools=ToolRegistry([a, b]), log=log)
+    elapsed = time.monotonic() - t0
+
+    assert state.is_done
+    # If dispatched serially, this would take ≥0.30s. Concurrent dispatch
+    # should land near 0.15s — give ourselves headroom for thread spinup.
+    assert elapsed < 0.27, f"batch ran serially ({elapsed:.3f}s)"
+
+    # One step recorded with kind=TOOL_BATCH; observation carries the
+    # per-call summary on `data["batch"]`.
+    batch_step = state.trace.steps[0]
+    assert batch_step.action.kind == ActionKind.TOOL_BATCH
+    assert batch_step.observation.ok is True
+    assert batch_step.observation.data["n"] == 2
+    names_out = sorted(r["name"] for r in batch_step.observation.data["batch"])
+    assert names_out == ["a", "b"]
+
+    # Events: a TOOL_BATCH boundary marker plus per-call TOOL_CALL +
+    # TOOL_RESULT with `in_batch=True`.
+    kinds = [e.kind for e in log.events]
+    assert EventKind.TOOL_BATCH in kinds
+    batch_evs = [e for e in log.events if e.kind == EventKind.TOOL_BATCH]
+    assert batch_evs[0].payload["tool_names"] == ["a", "b"]
+    in_batch_calls = [
+        e for e in log.events
+        if e.kind == EventKind.TOOL_CALL and e.payload.get("in_batch")
+    ]
+    assert len(in_batch_calls) == 2
+
+
+def test_tool_batch_with_one_failing_sub_call_records_combined_error() -> None:
+    """If one sub-call errors, batch ok=False but the other still ran."""
+    good = _slow_tool("good", 0.0, {"value": 1})
+
+    def _bad_h(_: dict) -> dict:
+        raise RuntimeError("boom")
+
+    bad = JsonTool(
+        name="bad", description="bad",
+        input_schema={"type": "object", "properties": {}},
+        handler=_bad_h,
+    )
+    policy = _ScriptedPolicy([
+        Action(
+            kind=ActionKind.TOOL_BATCH,
+            meta={"batch_calls": [
+                {"name": "good", "args": {}},
+                {"name": "bad", "args": {}},
+            ]},
+        ),
+        Action(kind=ActionKind.FINAL_ANSWER, answer="done"),
+    ])
+    state = AgentState(question="?", budget=Budget(max_steps=5))
+    state = run_policy(state, policy, llm=_DummyLLM(),
+                       tools=ToolRegistry([good, bad]))
+    batch_step = state.trace.steps[0]
+    assert batch_step.observation.ok is False
+    assert "bad" in (batch_step.observation.error or "")
+    by_name = {r["name"]: r for r in batch_step.observation.data["batch"]}
+    assert by_name["good"]["ok"] is True
+    assert by_name["bad"]["ok"] is False
+
+
+def test_tool_batch_auto_registers_evidence_per_sub_call() -> None:
+    """Each sub-call's hits should land in state.evidence, same as single tools."""
+    def _h(payload: dict) -> dict:
+        return {"hits": [{"title": payload["q"], "url": f"https://x/{payload['q']}",
+                          "snippet": payload["q"]}]}
+
+    search = JsonTool(
+        name="search", description="fake",
+        input_schema={"type": "object",
+                      "properties": {"q": {"type": "string"}}},
+        handler=_h,
+    )
+    policy = _ScriptedPolicy([
+        Action(
+            kind=ActionKind.TOOL_BATCH,
+            meta={"batch_calls": [
+                {"name": "search", "args": {"q": "alpha"}},
+                {"name": "search", "args": {"q": "beta"}},
+            ]},
+        ),
+        Action(kind=ActionKind.FINAL_ANSWER, answer="done"),
+    ])
+    state = AgentState(question="?", budget=Budget(max_steps=5))
+    state = run_policy(state, policy, llm=_DummyLLM(),
+                       tools=ToolRegistry([search]))
+    sources = sorted(ev.source for ev in state.evidence)
+    assert sources == ["https://x/alpha", "https://x/beta"]
+
+
 def test_driver_survives_policy_exception() -> None:
     state = AgentState(question="?", budget=Budget(max_steps=3))
     log = EventLog()

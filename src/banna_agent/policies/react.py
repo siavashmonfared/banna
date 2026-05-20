@@ -464,16 +464,55 @@ class ReActPolicy:
                 meta={"policy": self.name, "error": True},
             )
 
-        # Prefer tool calls over text. Take the first tool_call only for now;
-        # parallel tool-use is a scheduling feature the driver will gain later.
+        # Prefer tool calls over text. If the model emitted ≥2 tool_calls
+        # in the same reply (and none of them is final_answer, which is
+        # the terminal commit), dispatch them as a TOOL_BATCH so the
+        # driver can run them concurrently. A single tool_call still
+        # follows the original path.
         if reply.has_tool_calls:
+            preceding_text = (reply.text or "").strip()
+            call_names = [c.name for c in reply.tool_calls if c.name]
+            has_final = any(n == "final_answer" for n in call_names)
+            if len(reply.tool_calls) >= 2 and not has_final:
+                # Deduplicate identical (name, args) pairs — providers
+                # occasionally echo the same call. Cap the batch to 5 to
+                # bound provider-side rate-limit blast.
+                seen: set[tuple[str, str]] = set()
+                batch: list[dict[str, Any]] = []
+                for c in reply.tool_calls:
+                    if not c.name:
+                        continue
+                    args = dict(c.arguments or {})
+                    key = (c.name, str(sorted(args.items())))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    batch.append({"name": c.name, "args": args})
+                    if len(batch) >= 5:
+                        break
+                if len(batch) >= 2:
+                    return Action(
+                        kind=ActionKind.TOOL_BATCH,
+                        meta={
+                            "policy": self.name,
+                            "provider": reply.provider,
+                            "model": reply.model,
+                            "stop_reason": reply.stop_reason,
+                            "tokens_in": reply.usage.tokens_in,
+                            "tokens_out": reply.usage.tokens_out,
+                            "preceding_text": preceding_text,
+                            "batch_calls": batch,
+                            "batch_names": [c["name"] for c in batch],
+                        },
+                    )
+                # Fell through (dedup collapsed to 1) — fall into the
+                # single-call path below using the first call.
             call = reply.tool_calls[0]
             # The model may emit reasoning text alongside the tool call in
             # the same response (chain-of-thought before commit). Preserve
             # it so future turns see the model's working — both as
             # context for its own next decision and so it can use it as
             # CoT scaffolding when writing the answer.
-            preceding_text = (reply.text or "").strip()
             # Intercept `final_answer` calls: they're a structured commit
             # channel, not a real side-effect tool. Convert directly to a
             # FINAL_ANSWER action so the agent loop terminates with the
@@ -655,10 +694,19 @@ class ReActPolicy:
         leaves ``trace.final_answer`` unset.
         """
         # --- Cheap fallback (used as the safety net for branch 1) ---
+        #
+        # Skip the `[empty_reply] model returned no text and no tool_calls`
+        # marker (line ~546) — that string is internal bookkeeping for the
+        # empty-reply detector, not an answer the model committed. Earlier
+        # versions of this fallback let the marker land in `pred_answer`
+        # and score zero on every such task on GAIA. Treat it as no-text.
+        def _is_marker(txt: str) -> bool:
+            return txt.startswith("[empty_reply]")
+
         def _cheap() -> Action | None:
             if state.claims:
                 ans = (state.claims[-1].text or "").strip()
-                if ans:
+                if ans and not _is_marker(ans):
                     return Action(
                         kind=ActionKind.FINAL_ANSWER,
                         answer=ans,
@@ -670,11 +718,13 @@ class ReActPolicy:
                     )
             for step in reversed(state.trace.steps):
                 m = step.action.meta or {}
+                if m.get("empty_reply"):
+                    continue
                 txt = (m.get("preceding_text") or "").strip()
                 if not txt:
                     txt = (step.action.text or "").strip()
                 # Short text only — long traces are reasoning, not answers.
-                if txt and len(txt) <= 80:
+                if txt and len(txt) <= 80 and not _is_marker(txt):
                     return Action(
                         kind=ActionKind.FINAL_ANSWER,
                         answer=txt,
