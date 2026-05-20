@@ -2,7 +2,7 @@
 
 A from-scratch, provider-agnostic reasoning agent with a **typed state substrate** and a **verifier-guided** loop. Built to study where ReAct-style agents fail on the **GAIA** benchmark and to fix those failures structurally — not with prompt patches.
 
-No LangChain, no LlamaIndex, no smolagents in the core. The reasoning loop is a typed transition function over `(state, action, observation) → state'`; ReAct, verifier-retry, planner-ReAct, BFS/DFS/best-first-over-plans, and best-of-N are each ~200 LOC `Policy` implementations over that same substrate.
+No LangChain, no LlamaIndex, no smolagents in the core. The reasoning loop is a typed transition function over `(state, action, observation) → state'`; each control strategy (ReAct, verifier-retry, planner-ReAct, BFS/DFS/best-first-over-plans, best-of-N) is a ~200 LOC `Policy` implementation over that same substrate. The public CLI currently exposes only the policies that have a benchmark run behind them — `verifier_retry` today, others as their evals land.
 
 ## What's interesting about this repo
 
@@ -59,17 +59,17 @@ Tools are `Callable[[dict], dict]` with a `ToolSpec` schema. Each one writes evi
 
 A `Policy` implements one method: `propose(state, llm, tools) → Action`. The driver doesn't care which strategy is running.
 
-| Policy | Mechanism | Best at | Cost vs. ReAct |
-|---|---|---|---|
-| `react` | One LLM call per tick; model picks `THINK` / `TOOL_CALL` / `FINAL_ANSWER` | Cheap baseline, latency-sensitive runs | 1× |
-| `planner_react` | Planner produces an ordered subtask list once; ReAct executes step-by-step against it | Multi-hop questions where wandering is expensive | ~1.1× (one extra planning call) |
-| `verifier_retry` | Wraps any inner policy. On `FINAL_ANSWER`, runs verifiers; on fail, converts to a THINK with per-verifier nudges so the inner policy retries. Up to `max_retries` (default 3). | Reducing the "looked right, was wrong" failure class | ~1.2–1.5× when retries fire |
-| `best_of_n` | K independent trajectories of `verifier_retry(react)`, then a selector (`majority_vote` for free or `llm_judge` for one extra call) picks the answer | Hardest tasks; trades $ for accuracy | ~K× |
-| `bfs_over_plans` | Propose K candidate plans; expand all by one step; score; keep the best frontier | Search-shaped problems with clear scoring | ~K× |
-| `dfs_over_plans` | Propose K plans; fully expand one before moving to the next | When a good plan exists and we want depth, not breadth | ~K× worst-case, often less |
-| `best_first_over_plans` | K plans; at each step, expand the highest-scored frontier node | Best-of-both: depth + pruning | ~K× worst-case |
+Policies are introduced to the public build as their benchmark validation lands in [`docs/evals/`](docs/evals/). The repository ships the implementations for the rest of the policy family, but only validated policies are selectable via `--policy` / `/policy`. This is deliberate: the public build only advertises what's been measured.
 
-The wrapping is compositional — `best_of_n(verifier_retry(react))` is one line in the constructor. Adding a new policy is ~200 LOC because all of the substrate, verifiers, budgets, and tools come for free.
+| Policy | Status | Mechanism | Cost vs. ReAct |
+|---|---|---|---|
+| `verifier_retry` (wraps ReAct) | **Validated — GAIA val 37.6 % (62 / 165) on `gpt-5-nano`. See [`docs/evals/gaia_c1_c6_report.md`](docs/evals/gaia_c1_c6_report.md).** | On `FINAL_ANSWER`, runs verifiers; on fail, converts to a THINK with per-verifier nudges so the inner ReAct retries. Up to `max_retries` (default 3). | ~1.2–1.5× when retries fire |
+| `react` | Code present; not exposed | One LLM call per tick; model picks `THINK` / `TOOL_CALL` / `FINAL_ANSWER` | 1× |
+| `planner_react` | Code present; not exposed | Planner produces an ordered subtask list once; ReAct executes step-by-step against it | ~1.1× |
+| `best_of_n` | Code present; not exposed | K independent trajectories, selector (`majority_vote` / `llm_judge`) picks the answer | ~K× |
+| `bfs_over_plans` / `dfs_over_plans` / `best_first_over_plans` | Code present; not exposed | Plan-frontier search variants over K candidate plans | ~K× worst-case |
+
+The wrapping is compositional — `best_of_n(verifier_retry(react))` is one line in the constructor. Adding a new policy is ~200 LOC because the substrate, verifiers, budgets, and tools come for free.
 
 ### Verifiers
 
@@ -199,15 +199,16 @@ Diagnosed from a full GAIA validation run on `gpt-5-nano`. Each fix lands as a s
 
 ## GAIA validation results
 
-> The fixes are landed and tested (778 tests passing in the public build). A full GAIA post-fix re-run on `gpt-5-nano` is in progress and the numbers below will be populated from `docs/evals/gaia_c1_c6_report.md` when it completes.
+778 tests pass in the public build. The full post-fix GAIA validation run completed on 2026-05-19 — see [`docs/evals/gaia_c1_c6_report.md`](docs/evals/gaia_c1_c6_report.md) for the per-Cx breakdown, operational stats, and an honest "limitations of this evaluation" section.
 
 | Run | Provider · model | Policy | Set | Accuracy | Notes |
 |-----|------------------|--------|-----|----------|-------|
-| Pre-C1–C6 | OpenAI · `gpt-5-nano` | verifier_retry | GAIA val (165 Q) | **33.9 %** (56 / 165) | $0.94, 7 structural bugs surfaced |
-| Post-C1–C6 | OpenAI · `gpt-5-nano` | verifier_retry | GAIA val (165 Q) | _re-run pending_ | target ≥ 40 % |
-| Post-C1–C6 | OpenAI · `gpt-5-nano` | best_of_n (K=3) | GAIA val (165 Q) | _re-run pending_ | stretch ≥ 45 % |
+| Pre-C1–C6 | OpenAI · `gpt-5-nano` | verifier_retry | GAIA val (165 Q) | **33.9 %** (56 / 165) | $0.94 — surfaced 7 structural bugs |
+| Post-C1–C6b | OpenAI · `gpt-5-nano` | verifier_retry | GAIA val (165 Q) | **37.6 %** (62 / 165) | $1.01 — L1 47.2 %, L2 38.4 %, L3 15.4 %; +3.7 pp / ≈ +11 % relative |
 
-(Numbers populate once the re-run completes; CI is wired to gate on a held-out smoke subset.)
+Failure-mode shifts from the same run: `budget_steps` exits 27 → 2, `budget_wall` exits dropped from ~51 % of the C4-only partial run to 7.9 %, and `pred_answer = null` on budget trip dropped 22 → 3 (C3 synthesis hook firing). Rich attachment tools went from 1 call pre-fix to 40 calls post-fix (C5).
+
+`best_of_n(verifier_retry)` is the next planned policy to validate; it is implemented in `src/banna_agent/policies/best_of_n.py` but not yet exposed via the CLI (see Policies table below) — that gate lifts when its eval lands.
 
 ## Repo layout
 

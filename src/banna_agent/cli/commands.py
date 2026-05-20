@@ -19,14 +19,13 @@ from .display import tools_table, turns_table
 
 
 # Per-policy human-readable knobs we accept for `/policy <name>`.
+#
+# Only validated policies are exposed via the CLI. Other policy
+# implementations ship in `banna_agent.policies` but are not selectable
+# from `--policy` / `/policy` until they have a benchmark run behind them.
+# Add a name here once its validation run lands in `docs/evals/`.
 POLICY_NAMES = (
-    "react",
-    "planner_react",
-    "bfs_over_plans",
-    "dfs_over_plans",
-    "best_first_over_plans",
     "verifier_retry",
-    "best_of_n",
 )
 
 

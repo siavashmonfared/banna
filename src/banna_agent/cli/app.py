@@ -78,7 +78,7 @@ class MyAgentApp:
 
     provider: str = "openai"
     model: str | None = "gpt-5-nano"
-    policy_name: str = "react"
+    policy_name: str = "verifier_retry"
     temperature: float = 0.7
     n_candidates: int = 3
     budget_steps: int = 10
@@ -464,7 +464,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                     help="LLM provider to start with.")
     ap.add_argument("--model", default=os.environ.get("MYAGENT_MODEL", "gpt-5-nano"),
                     help="Override the provider's default model.")
-    ap.add_argument("--policy", default="react", choices=POLICY_NAMES,
+    ap.add_argument("--policy", default="verifier_retry", choices=POLICY_NAMES,
                     help="Policy to run.")
     ap.add_argument("--n-candidates", type=int, default=3,
                     help="N candidate plans (BFS/DFS/best-first).")
