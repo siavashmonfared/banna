@@ -2,7 +2,7 @@
 
 A from-scratch, provider-agnostic reasoning agent with a **typed state substrate** and a **verifier-guided** loop. Built to study where ReAct-style agents fail on the **GAIA** benchmark and to fix those failures structurally — not with prompt patches.
 
-No LangChain, no LlamaIndex, no smolagents in the core. The reasoning loop is a typed transition function over `(state, action, observation) → state'`; each control strategy (ReAct, verifier-retry, planner-ReAct, BFS/DFS/best-first-over-plans, best-of-N) is a ~200 LOC `Policy` implementation over that same substrate. The public CLI currently exposes only the policies that have a benchmark run behind them — `verifier_retry` today, others as their evals land.
+No LangChain, no LlamaIndex, no smolagents in the core. The reasoning loop is a typed transition function over `(state, action, observation) → state'`; each control strategy (ReAct, verifier-retry, planner-ReAct, BFS/DFS/best-first-over-plans, best-of-N) is a ~200 LOC `Policy` implementation over that same substrate. The public CLI currently exposes only the policies that have a benchmark run behind them — **`react` today** (42.4 % on GAIA val, the best validated public result so far); the wrapper + extra inner policies are gated until their ablation rows land.
 
 ## What's interesting about this repo
 
@@ -63,13 +63,13 @@ Policies are introduced to the public build as their benchmark validation lands 
 
 | Policy | Status | Mechanism | Cost vs. ReAct |
 |---|---|---|---|
-| `verifier_retry` (wraps ReAct) | **Validated — GAIA val 37.6 % (62 / 165) on `gpt-5-nano`. See [`docs/evals/gaia_c1_c6_report.md`](docs/evals/gaia_c1_c6_report.md).** | On `FINAL_ANSWER`, runs verifiers; on fail, converts to a THINK with per-verifier nudges so the inner ReAct retries. Up to `max_retries` (default 3). | ~1.2–1.5× when retries fire |
-| `react` | Code present; not exposed | One LLM call per tick; model picks `THINK` / `TOOL_CALL` / `FINAL_ANSWER` | 1× |
+| `react` | **Validated — best public result. GAIA val 42.4 % (70 / 165) on `gpt-5-nano`. See [`docs/evals/gaia_c1_c6_report.md`](docs/evals/gaia_c1_c6_report.md).** | One LLM call per tick; model picks `THINK` / `TOOL_CALL` / `FINAL_ANSWER` | 1× |
+| `verifier_retry` (wraps any inner policy) | Code present; **not exposed** — `react + intrinsic` scored 37.6 % vs bare `react`'s 42.4 % on the same substrate, a 4.8 pp regression. Re-introduced once an extrinsic-verifier validation closes the gap. | On `FINAL_ANSWER`, runs verifiers; on fail, converts to a THINK with per-verifier nudges so the inner policy retries. | ~1.2–1.5× when retries fire |
 | `planner_react` | Code present; not exposed | Planner produces an ordered subtask list once; ReAct executes step-by-step against it | ~1.1× |
 | `best_of_n` | Code present; not exposed | K independent trajectories, selector (`majority_vote` / `llm_judge`) picks the answer | ~K× |
 | `bfs_over_plans` / `dfs_over_plans` / `best_first_over_plans` | Code present; not exposed | Plan-frontier search variants over K candidate plans | ~K× worst-case |
 
-The wrapping is compositional — `best_of_n(verifier_retry(react))` is one line in the constructor. Adding a new policy is ~200 LOC because the substrate, verifiers, budgets, and tools come for free.
+The wrapping is compositional — `best_of_n(verifier_retry(react))` is one line in the constructor. Adding a new policy is ~200 LOC because the substrate, verifiers, budgets, and tools come for free. The CLI gate (only `react` selectable today) is independent of the code: every policy ships, only the validated one is advertised.
 
 ### Verifiers
 
@@ -135,20 +135,20 @@ banna
 # Provider: [1]
 
 # subsequent runs use saved defaults; override any time with flags:
-banna --policy verifier_retry --provider openai --model gpt-5-nano
+banna --policy react --provider openai --model gpt-5-nano
 
 # or run a single GAIA Level-1 question (no REPL)
 python -m banna_agent.benchmarks.gaia.runner \
-    --policy verifier_retry --provider openai --model gpt-5-nano \
+    --policy react --provider openai --model gpt-5-nano \
     --level 1 --n 1
 ```
 
 ### Example REPL session
 
 ```
-$ banna --policy verifier_retry --provider openai --model gpt-5-nano
+$ banna --policy react --provider openai --model gpt-5-nano
 
-● banna · v0.1.1   provider=openai   model=gpt-5-nano   policy=verifier_retry
+● banna · v0.1.1   provider=openai   model=gpt-5-nano   policy=react
 
 > How many studio albums did Mercedes Sosa release between 2000 and 2009?
 
@@ -199,16 +199,34 @@ Diagnosed from a full GAIA validation run on `gpt-5-nano`. Each fix lands as a s
 
 ## GAIA validation results
 
-778 tests pass in the public build. The full post-fix GAIA validation run completed on 2026-05-19 — see [`docs/evals/gaia_c1_c6_report.md`](docs/evals/gaia_c1_c6_report.md) for the per-Cx breakdown, operational stats, and an honest "limitations of this evaluation" section.
+Three full-set runs on `gpt-5-nano`, 165 GAIA-val questions across L1/L2/L3. See [`docs/evals/gaia_c1_c6_report.md`](docs/evals/gaia_c1_c6_report.md) for the per-Cx breakdown, per-level numbers, exit distributions, and an honest *"limitations of this evaluation"* section.
 
-| Run | Provider · model | Policy | Set | Accuracy | Notes |
-|-----|------------------|--------|-----|----------|-------|
-| Pre-C1–C6 | OpenAI · `gpt-5-nano` | verifier_retry | GAIA val (165 Q) | **33.9 %** (56 / 165) | $0.94 — surfaced 7 structural bugs |
-| Post-C1–C6b | OpenAI · `gpt-5-nano` | verifier_retry | GAIA val (165 Q) | **37.6 %** (62 / 165) | $1.01 — L1 47.2 %, L2 38.4 %, L3 15.4 %; +3.7 pp / ≈ +11 % relative |
+| Run | Policy (friendly name) | Set | Accuracy | Cost |
+|---|---|---|---|---|
+| Pre-C1–C6 baseline | `react + intrinsic` | GAIA val (165) | 33.9 % (56 / 165) | $0.94 |
+| Post-C1–C6b | `react + intrinsic` | GAIA val (165) | 37.6 % (62 / 165) | $1.01 |
+| Post-C1–C6b | **`react`** *(today's CLI default)* | GAIA val (165) | **42.4 %** (70 / 165) | $0.87 |
 
-Failure-mode shifts from the same run: `budget_steps` exits 27 → 2, `budget_wall` exits dropped from ~51 % of the C4-only partial run to 7.9 %, and `pred_answer = null` on budget trip dropped 22 → 3 (C3 synthesis hook firing). Rich attachment tools went from 1 call pre-fix to 40 calls post-fix (C5).
+### The headline finding
 
-`best_of_n(verifier_retry)` is the next planned policy to validate; it is implemented in `src/banna_agent/policies/best_of_n.py` but not yet exposed via the CLI (see Policies table below) — that gate lifts when its eval lands.
+On the post-C1–C6b substrate, **the intrinsic verifier set (`Format / Arithmetic / Citation / Coverage`) is a net negative.** Bare `react` beats `react + intrinsic` by **4.8 pp overall and 8.1 pp on L2** — exactly the regime where verifier retries fire most often. Mechanism: false-positive retries reject correct answers, the retry tick burns evidence and steps, the retried answer is worse than the original.
+
+Implication for the CLI: today the public build exposes **only `react`** under `--policy` / `/policy`. The wrapper class (`VerifierRetryPolicy`) and the other inner policies (`planner_react`, `best_of_n`, …) ship in `src/banna_agent/policies/` but are not selectable until their re-validation closes the gap.
+
+### Next ablation: does *extrinsic* verification flip the sign?
+
+The interesting question now is whether *reflexion-style* verification (grading the answer against the user's stated constraints, not against the trace) recovers or improves on bare `react`. The ablation pipeline is in `experiments/02_gaia_full/configs/ablation/` and runs sequentially via `bash experiments/02_gaia_full/run_ablation.sh`. Status as of this commit:
+
+| Row | Friendly name | Status |
+|---|---|---|
+| A | `react` | done — **42.4 %** |
+| B | `react + intrinsic` | done — 37.6 % (regression) |
+| **C** | **`planner_react`** | **next** |
+| G | `react + extrinsic` | queued |
+| E | `react + intrinsic + extrinsic` | queued |
+| F | `planner_react + intrinsic + extrinsic` | queued |
+
+Validated rows graduate into the public CLI as they land. Every row is one YAML config — adding a new ablation is a new file, not a new code path.
 
 ## Repo layout
 

@@ -25,7 +25,7 @@ from .display import tools_table, turns_table
 # from `--policy` / `/policy` until they have a benchmark run behind them.
 # Add a name here once its validation run lands in `docs/evals/`.
 POLICY_NAMES = (
-    "verifier_retry",
+    "react",
 )
 
 

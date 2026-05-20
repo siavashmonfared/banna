@@ -2,7 +2,7 @@
 
 This is the pre-/post-fix evaluation behind the README's "Failure modes & fixes" claim. It documents how the seven structural failure modes were diagnosed, what each fix changed, and what the changes did to GAIA accuracy, cost, and failure distribution.
 
-> Status: post-fix numbers below are from the `runs/20260519T135650_postC1C6b_verifier_retry_full/` run (165 / 165 tasks complete, 2026-05-19). Pre-fix numbers come from the C0 baseline run that surfaced the bugs.
+> Status: post-fix numbers are populated from the `runs/20260519T135650_postC1C6b_verifier_retry_full/` run. Pre-fix numbers come from `runs/20260516_postC0_verifier_retry_full/` (the run that surfaced the bugs).
 
 ## Setup
 
@@ -36,20 +36,56 @@ A run takes ~4–5 hours and costs ~$1.20 in OpenAI API credits. The per-task ev
 
 ## Headline
 
-| Run | Set | Policy | Accuracy | Cost | Notes |
+| Run | Set | Policy (friendly name) | Accuracy | Cost | Notes |
 |---|---|---|---|---|---|
-| Pre-C1–C6 (baseline) | GAIA val (165) | verifier_retry | **33.9 %** (56 / 165) | $0.94 | Surfaced 7 structural failure modes |
-| Post-C1–C6b | GAIA val (165) | verifier_retry | **37.6 %** (62 / 165) | $1.01 | +3.7 pp absolute, ≈ +11 % relative |
+| Pre-C1–C6 baseline | GAIA val (165) | `react + intrinsic` | **33.9 %** (56 / 165) | $0.94 | Surfaced 7 structural failure modes |
+| Post-C1–C6b | GAIA val (165) | `react + intrinsic` | **37.6 %** (62 / 165) | $1.01 | +3.7 pp from substrate fixes alone |
+| Post-C1–C6b | GAIA val (165) | **`react`** (bare — ablation row A) | **42.4 %** (70 / 165) | $0.87 | **+4.8 pp over `react + intrinsic`** — *intrinsic verification regresses accuracy on this substrate* |
 
-### Per-level
+The bare-`react` row is the surprise. On the post-fix substrate, the intrinsic verifier set (Format / Arithmetic / Citation / Coverage) is a **net negative** of ~5 pp. The mechanism appears to be false-positive retries: verifiers reject correct answers, the retry tick burns evidence and steps, the retried answer is worse than the original.
 
-| Level | n | Pre acc | Post acc | Δ |
+This makes the **next ablation question the headline question**: does extrinsic (reflexion-style) verification — checking the answer against the user's prompt rather than against the trace — flip the sign? See *"Ablation table"* below.
+
+### Per-level (post-C1–C6b)
+
+| Level | n | `react + intrinsic` | **`react`** (row A) | Δ |
 |---|---|---|---|---|
-| L1 | 53 | _C0 baseline_ | **47.2 %** (25 / 53) | _vs. baseline_ |
-| L2 | 86 | _C0 baseline_ | **38.4 %** (33 / 86) | _vs. baseline_ |
-| L3 | 26 | _C0 baseline_ | **15.4 %** (4 / 26) | _vs. baseline_ |
+| L1 | 53 | 47.2 % | **49.1 %** | +1.9 pp |
+| L2 | 86 | 38.4 % | **46.5 %** | **+8.1 pp** |
+| L3 | 26 | 15.4 % | 15.4 % | 0 |
 
-Per-level pre-fix counts from the C0 run will be filled in once that run's `results.jsonl` is rescored under the same scorer; the headline pre-fix 33.9 % is the only number lifted from that run that has been re-verified end-to-end.
+L2 is where the regression concentrates — exactly the regime where verifier retries fire most often (multi-hop questions with cited evidence). The 8.1 pp gap at L2 is the smoking gun: verifier retries kill more correct answers than they save.
+
+### Exit distribution (post-C1–C6b)
+
+| budget_reason | `react + intrinsic` | **`react`** (row A) |
+|---|---|---|
+| `ok` (clean commit) | 138 / 165 (84 %) | **152 / 165 (92 %)** |
+| `budget_wall` | 13 | 9 |
+| `budget_repair_steps` | 12 | 4 |
+| `budget_steps` | 2 | 0 |
+| `pred_answer = null` | 3 | (still being scored) |
+
+Repair-step exits dropped by 3× without verifiers — bare ReAct doesn't enter the repair loop in the first place.
+
+## Ablation table — the path forward
+
+Two rows done; the next four are the test of whether verification *as a class* helps:
+
+| Row | Friendly name | Implementation | Status |
+|---|---|---|---|
+| A | `react` | `ReActPolicy` | **done — 42.4 %** |
+| B | `react + intrinsic` | `verifier_retry(react, [format, arithmetic, citation, coverage])` | **done — 37.6 % (regression)** |
+| C | `planner_react` | `PlannerReActPolicy` | queued (next) |
+| G | `react + extrinsic` | `verifier_retry(react, [count, reflexion])` | queued |
+| E | `react + intrinsic + extrinsic` | `verifier_retry(react, [...all 6...])` | queued |
+| F | `planner_react + intrinsic + extrinsic` | `verifier_retry(planner_react, [...all 6...])` | queued |
+
+The architecturally interesting deltas:
+- **A → G**: does extrinsic-only verification recover or improve on bare ReAct? (Tests whether the wrapper-with-good-verifiers is positive.)
+- **A → C**: does planning alone help over bare ReAct?
+- **C → F**: does adding verifiers to planner_react regress the same way it regressed react?
+- **G vs. E**: does keeping intrinsic *alongside* extrinsic still hurt?
 
 ## Failure-mode comparison
 
@@ -57,12 +93,12 @@ For each ID, count of tasks that exited the loop with that `budget_reason`:
 
 | Code | budget_reason | Pre-fix | Post-fix | Diagnosis |
 |---|---|---|---|---|
-| — | `ok` (finished cleanly) | _C0 baseline_ | **138 / 165** (83.6 %) | Dominant healthy path; accuracy on this subset is **39.9 %** (55 / 138) |
-| — | `budget_steps` | 27 (L1: 19) | **2 / 165** | Step cap; C4 essentially eliminated this failure mode |
-| C1 | `budget_repair_steps` (new axis) | n/a | **12 / 165** | New axis catches `[empty_reply]` loops + verifier-retry storms before they eat productive steps; 4 / 12 still scored |
-| — | `budget_wall` | 25 / 49 partial (C4 first run) | **13 / 165** (7.9 %) | Wall cap; C4b cut this from ~51 % of partial run to under 8 % |
-| — | `budget_tokens` | _C0 baseline_ | **0 / 165** | Not the dominant cap on this set |
-| C3 | `pred_answer = null` on exit | 22 / 165 | **3 / 165** | Budget-exhaustion synthesis worked — null-pred rate fell ~87 % |
+| — | `ok` (finished cleanly) | _baseline_ | _populated_ | The dominant healthy path |
+| — | `budget_steps` | 27 (L1: 19) | _populated_ | Step cap; addressed by C4 |
+| C1 | `budget_repair_steps` (new axis) | n/a | _populated_ | Catches `[empty_reply]` loops + verifier-retry storms before they eat productive steps |
+| — | `budget_wall` | _baseline_ | _populated_ | Wall cap; addressed by C4b |
+| — | `budget_tokens` | _baseline_ | _populated_ | |
+| C3 | `pred_answer = null` on exit | 22 | _populated_ | Budget-exhaustion synthesis should drive to 0 |
 
 ## The seven fixes
 
@@ -154,27 +190,15 @@ Each entry: one-line failure mode → root cause → fix → expected measurable
 
 **Pinned by tests:** `tests/policies/test_verifier_retry.py::test_format_feedback_includes_per_verifier_nudge`, `test_format_feedback_groups_by_verifier_one_per_kind`, `test_format_feedback_canonical_emits_required_action`, and per-verifier nudge content tests.
 
-## Operational stats from the post-fix run
-
-| Metric | Value |
-|---|---|
-| Total LLM tool calls | 794 |
-| Tool-call mix (top) | `search` 575, `read_url` 55, `run_python` 36, `read_file` 35, `browser_open` 22 |
-| Rich attachment tools fired | `xlsx_*` **29** calls (was 1 pre-fix); `pdf_*` **11** calls (was 0 pre-fix) — C5 working |
-| Median steps_used (correct vs. wrong) | 4 vs. 6 |
-| Median wall_s (correct vs. wrong) | 69 s vs. 122 s |
-| Median wall_s (all tasks) | 92 s |
-| p90 wall_s | 231 s (right against the 240 s cap — wall is still the binding constraint for the long tail) |
-
 ## Representative traces
 
-Three task IDs to pull from the post-fix run for end-to-end fix illustrations (paths to be linked once selected):
+When the post-fix run completes, three task IDs will be selected to illustrate the fix story end-to-end:
 
-1. **A clean L1 in ≤4 steps.** Happy path: one search, one read_url, one final_answer accepted by all verifiers. ~25 / 53 L1 tasks took this shape.
-2. **A verifier-retry rescue on L2.** First commit rejected by a verifier; the nudge fired and the next tick re-emitted a passing answer. Repair-step axis (C1) absorbed the retry tick instead of burning a productive step.
-3. **An XLSX-heavy L2.** `xlsx_list_sheets` → `xlsx_describe` → `xlsx_read_range` → `final_answer`. Shows the C5 attachment-hint fix routing the model to the right tool family on first try.
+1. **A clean ReAct success on L1** — shows the happy path the public repo gets right out of the box. _Trace path TBD._
+2. **A verifier-retry rescue on L2** — task where the first commit was rejected by `CitationVerifier`, the nudge fired, the next tick re-searched and re-committed correctly. _Trace path TBD._
+3. **A hard attachment task using PDF or XLSX tools** — shows the C5 fix exercising the rich tool family that the pre-fix run never reached. _Trace path TBD._
 
-Trace paths will be linked as `runs/<id>/logs/<task_id>.jsonl` once selected from the run.
+Traces will be linked from this report as `runs/<id>/logs/<task_id>.jsonl` for full reproducibility.
 
 ## Limitations of this evaluation
 
