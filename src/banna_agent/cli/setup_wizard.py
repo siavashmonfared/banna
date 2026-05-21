@@ -180,17 +180,76 @@ def _say(msg: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _probe_ollama_tool_support(model: str, timeout_s: float = 5.0) -> tuple[bool, str]:
+    """Test whether an Ollama model accepts a `tools` field.
+
+    Sends a minimal /api/chat with one dummy tool. Returns (True, "")
+    when the model supports tools, (False, reason) when Ollama rejects
+    with "does not support tools" (or similar). Network errors return
+    (True, "") to avoid blocking the wizard on a flaky probe — the real
+    agent loop will surface the failure cleanly via the new
+    ProviderError path.
+    """
+    try:
+        r = requests.post(
+            "http://localhost:11434/api/chat",
+            json={
+                "model": model,
+                "messages": [{"role": "user", "content": "."}],
+                "stream": False,
+                "tools": [{
+                    "type": "function",
+                    "function": {
+                        "name": "probe",
+                        "description": "tool-support probe",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }],
+                "options": {"num_predict": 1},
+            },
+            timeout=timeout_s,
+        )
+        if r.status_code < 400:
+            return True, ""
+        body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+        msg = str(body.get("error") or r.text or "").lower()
+        if "does not support tools" in msg:
+            return False, "does not support tools (no tool-calling template)"
+        # Other 4xx/5xx — don't block on it.
+        return True, ""
+    except Exception:
+        return True, ""
+
+
 def _ollama_flow(models: list[dict[str, Any]]) -> tuple[str, str]:
-    """Returns (provider, model). Lets the user pick from installed Ollama models."""
+    """Returns (provider, model). Lets the user pick from installed Ollama models.
+
+    After picking, probes the model for tool-calling support. The agent
+    loop is fundamentally tool-driven (every action is dispatched as a
+    tool call), so a model without a tools-aware chat template can't
+    drive the loop at all. Warn loudly and let the user re-pick.
+    """
     _say("\n  Ollama detected at localhost:11434. Installed models:")
     for i, m in enumerate(models, start=1):
         name = m.get("name", "?")
         size_b = m.get("size", 0)
         size_gb = f"{size_b / 1e9:.1f} GB" if size_b else ""
         _say(f"    {i}. {name}    {size_gb}".rstrip())
-    idx = _ask_choice("\n  Pick a model:", n_options=len(models), default=1)
-    chosen = models[idx - 1].get("name", "")
-    return "ollama", chosen
+
+    while True:
+        idx = _ask_choice("\n  Pick a model:", n_options=len(models), default=1)
+        chosen = models[idx - 1].get("name", "")
+        _say(f"  probing {chosen} for tool-calling support…")
+        ok, reason = _probe_ollama_tool_support(chosen)
+        if ok:
+            return "ollama", chosen
+        _say(f"  ✗ {chosen} {reason}.")
+        _say("    banna's agent loop dispatches every action as a tool call,")
+        _say("    so this model can't drive the loop. Pick a tools-capable")
+        _say("    model (e.g. qwen3, qwen3-coder, gpt-oss).")
+        again = _ask("  pick another? (y/n)", default="y").lower()
+        if not again.startswith("y"):
+            sys.exit(2)
 
 
 def _cloud_flow(provider: str) -> tuple[str, str, str]:
@@ -270,7 +329,11 @@ def run_wizard() -> WizardResult:
     config_path = write_config({"default": {
         "provider": provider,
         "model": model,
-        "policy": "verifier_retry",
+        # Only `react` is exposed in the public CLI — wrapping policies
+        # (verifier_retry, planner_react, etc.) ship in src/ but are
+        # gated until each one's GAIA validation run lands. Writing any
+        # other name here would crash _build_policy at startup.
+        "policy": "react",
     }})
     env_path = None
     if api_key:

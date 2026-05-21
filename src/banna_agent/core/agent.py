@@ -398,9 +398,16 @@ def run_policy(
         try:
             action = policy.propose(state, llm=llm, tools=tools)
         except Exception as exc:
+            # Mark provider errors so the CLI can show a tailored hint
+            # ("set the API key" / "pick a different model") instead of
+            # just dumping the exception type.
+            from ..llm.base import ProviderError
+            is_provider_err = isinstance(exc, ProviderError)
             emit(log, run_id=state.trace.run_id, step=len(state.trace.steps),
                  kind=EventKind.ERROR, error=f"{type(exc).__name__}: {exc}",
-                 where="policy.propose")
+                 where="policy.propose",
+                 provider_error=is_provider_err,
+                 retryable=getattr(exc, "retryable", None) if is_provider_err else None)
             break
 
         # Truncate action text/answer so the event log stays small but

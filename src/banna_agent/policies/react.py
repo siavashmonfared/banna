@@ -457,7 +457,15 @@ class ReActPolicy:
         try:
             reply = llm.chat(**kwargs)
         except Exception as exc:
-            # The driver will see a THINK with this text and may tick again.
+            # Non-retryable provider errors (missing API key, model can't
+            # do tool-calling) will repeat on the next tick — bail to the
+            # driver so the loop terminates instead of burning the step
+            # budget on a deterministic failure. Transient errors (rate
+            # limits, transport blips) still get the THINK fallback so
+            # they self-recover.
+            from ..llm.base import ProviderError
+            if isinstance(exc, ProviderError) and not exc.retryable:
+                raise
             return Action(
                 kind=ActionKind.THINK,
                 text=f"[llm_error] {type(exc).__name__}: {exc}",

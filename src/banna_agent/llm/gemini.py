@@ -252,7 +252,8 @@ class GeminiClient:
     ) -> LLMReply:
         key = self.api_key or os.environ.get("GOOGLE_API_KEY") or os.environ.get("GOOGLE_SEARCH_API_KEY")
         if not key:
-            raise RuntimeError("GOOGLE_API_KEY not set.")
+            from .base import ProviderError
+            raise ProviderError("GOOGLE_API_KEY not set.", retryable=False)
         model_id = model or self.model
 
         contents, sys_from_msgs = _messages_to_gemini(messages)

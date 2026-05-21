@@ -32,6 +32,34 @@ from typing import Any, Literal, Protocol, Sequence, runtime_checkable
 
 Role = Literal["system", "user", "assistant", "tool"]
 
+
+# ---------------------------------------------------------------------------
+# Errors
+# ---------------------------------------------------------------------------
+
+
+class ProviderError(RuntimeError):
+    """A provider-side failure with a retryability hint.
+
+    The agent loop (and the ReAct policy's per-tick exception handling)
+    treats `retryable=True` (the default) as a transient error worth a
+    second attempt — rate limits, server hiccups, connection blips.
+
+    `retryable=False` is for *deterministic* failures where the next
+    call will fail identically: missing API key, model that doesn't
+    support tool calling, malformed request the user has to fix. The
+    loop bails immediately instead of burning the step budget on a
+    losing repeat.
+
+    Providers should keep raising plain `RuntimeError` for transient
+    cases (so existing callers' `except Exception` keeps working).
+    Only the two deterministic cases above need the new type.
+    """
+
+    def __init__(self, message: str, *, retryable: bool = True) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+
 # Every content block every provider can emit collapses into one of these.
 # `unknown` is a deliberate escape hatch so an adapter can emit blocks it
 # doesn't yet know how to classify — the `raw` field still carries detail.

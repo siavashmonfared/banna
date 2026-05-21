@@ -89,6 +89,18 @@ KNOWN_MODELS: dict[str, tuple[str, ...]] = {
 }
 
 
+# Map cloud provider → its API key env var. Used by /provider and
+# /model to detect missing keys before submitting a doomed request.
+# Ollama is keyless. Bedrock uses AWS_REGION + (keys or profile), which
+# is checked at client-construction time and produces its own
+# ProviderError; we don't second-guess it here.
+PROVIDER_API_KEY_ENV: dict[str, str] = {
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "gemini": "GOOGLE_API_KEY",
+}
+
+
 # ---------------------------------------------------------------------------
 # Interactive helpers — numbered picker, typed prompts
 # ---------------------------------------------------------------------------
@@ -318,6 +330,49 @@ def cmd_model(app: Any, args: list[str]) -> bool:
     return False
 
 
+def _ensure_api_key(app: Any, provider: str) -> bool:
+    """If the provider needs an API key and none is set, offer to fix it.
+
+    Returns True when the provider is ready to use (either keyless,
+    already has a key, or the user just supplied one). Returns False
+    when the user backed out — caller should NOT switch.
+    """
+    env_var = PROVIDER_API_KEY_ENV.get(provider)
+    if not env_var:
+        return True  # ollama / bedrock / anything keyless via env-var
+    if os.environ.get(env_var):
+        return True
+    app.console.print(
+        f"[yellow]no {env_var} found in your environment.[/yellow] "
+        f"{provider} won't work until one is set."
+    )
+    app.console.print(
+        "  1. paste a key now (saved to this session only — not persisted)"
+    )
+    app.console.print(f"  2. go back (keep current provider: [bold]{app.provider}[/bold])")
+    try:
+        raw = input("  > [1/2, default 2]: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        app.console.print("\n[dim](cancelled)[/dim]")
+        return False
+    if raw != "1":
+        return False
+    try:
+        key = input(f"  paste {env_var} (input echoed): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        app.console.print("\n[dim](cancelled)[/dim]")
+        return False
+    if not key:
+        app.console.print("[dim]empty key — cancelled[/dim]")
+        return False
+    os.environ[env_var] = key
+    app.console.print(
+        f"[dim]✓ {env_var} set for this session. "
+        f"To persist, add [bold]export {env_var}={key[:4]}…[/bold] to your shell rc.[/dim]"
+    )
+    return True
+
+
 def cmd_provider(app: Any, args: list[str]) -> bool:
     """Pick a provider. Bare `/provider` shows a numbered list."""
     from ..llm.registry import list_providers
@@ -330,6 +385,12 @@ def cmd_provider(app: Any, args: list[str]) -> bool:
                     current=app.provider, allow_custom=False)
         if new is None:
             return False
+    # Before switching, check the API key is available. The agent loop
+    # now fails fast on missing keys (ProviderError(retryable=False)),
+    # so catching it here means the user never sees the "0 steps,
+    # stopped: provider_error" branch.
+    if not _ensure_api_key(app, new):
+        return False
     app.provider = new
     try:
         app.rebuild_llm()

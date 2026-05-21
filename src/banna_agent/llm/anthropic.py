@@ -233,13 +233,15 @@ class AnthropicClient:
                 or os.environ.get("AWS_DEFAULT_REGION")
             )
             if not region:
-                raise RuntimeError(
+                from .base import ProviderError
+                raise ProviderError(
                     "AWS_REGION not set. Either pass aws_region= when "
                     "building the client, or `export AWS_REGION=us-east-1` "
                     "(or us-west-2, eu-west-1, etc.) in your shell.\n"
                     "Bedrock model IDs prefixed `us.` work only when the "
                     "region is in the US partition; `eu.` for EU regions; "
-                    "`apac.` for APAC."
+                    "`apac.` for APAC.",
+                    retryable=False,
                 )
             # Surface a hint when AWS credentials are clearly absent. The
             # AWS SDK will eventually raise NoCredentialsError; surfacing
@@ -289,8 +291,10 @@ class AnthropicClient:
 
         key = self.api_key or os.environ.get("ANTHROPIC_API_KEY")
         if not key:
-            raise RuntimeError(
-                "ANTHROPIC_API_KEY not set. Pass api_key= or set the env var."
+            from .base import ProviderError
+            raise ProviderError(
+                "ANTHROPIC_API_KEY not set. Pass api_key= or set the env var.",
+                retryable=False,
             )
         kwargs = {"api_key": key}
         if self.base_url:

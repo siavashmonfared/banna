@@ -271,7 +271,8 @@ class OpenAIClient:
         import openai  # lazy
         key = self.api_key or os.environ.get("OPENAI_API_KEY")
         if not key:
-            raise RuntimeError("OPENAI_API_KEY not set.")
+            from .base import ProviderError
+            raise ProviderError("OPENAI_API_KEY not set.", retryable=False)
         kwargs: dict[str, Any] = {"api_key": key}
         if self.base_url:
             kwargs["base_url"] = self.base_url

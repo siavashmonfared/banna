@@ -211,6 +211,27 @@ class StreamingEventLog(EventLog):
             err = p.get("error", "?")
             where = p.get("where", "")
             self.console.print(f"[red]error[/red] [dim]({where})[/dim]: {err}")
+            # Tailored guidance for the deterministic provider failures —
+            # cheaper-to-fix once the user knows which knob to turn.
+            if p.get("provider_error") and p.get("retryable") is False:
+                low = str(err).lower()
+                if "api_key not set" in low or "api key not set" in low:
+                    self.console.print(
+                        "[dim]hint:[/dim] set the API key in your shell "
+                        "(e.g. [bold]export OPENAI_API_KEY=sk-…[/bold]), "
+                        "or run [bold]/provider[/bold] to switch."
+                    )
+                elif "does not support tools" in low:
+                    self.console.print(
+                        "[dim]hint:[/dim] this model can't do tool calls. "
+                        "Pick a tools-capable model with [bold]/model[/bold] "
+                        "(e.g. qwen3, qwen3-coder, gpt-oss for Ollama)."
+                    )
+                elif "aws_region not set" in low:
+                    self.console.print(
+                        "[dim]hint:[/dim] set [bold]AWS_REGION[/bold] for "
+                        "Bedrock (e.g. [bold]export AWS_REGION=us-east-1[/bold])."
+                    )
             return
 
         if kind == EventKind.COMPACT:

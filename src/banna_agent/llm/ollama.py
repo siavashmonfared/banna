@@ -223,8 +223,23 @@ class OllamaClient:
                     err_text = str(err_body.get("error") or err_body)
             except Exception:
                 err_text = resp.text if hasattr(resp, "text") else ""
-            raise RuntimeError(
-                f"ollama {status} for model={model_id!r}: {err_text or '(no body)'}"
+            # Some Ollama models (e.g. deepseek-r1, base instruct variants
+            # without a tools-aware chat template) return a 400 with the
+            # explicit string "does not support tools" when the request
+            # carries a `tools` field. This is deterministic — retrying
+            # would fail identically. Surface it as a non-retryable
+            # provider error so the agent loop bails immediately instead
+            # of burning the step budget.
+            from .base import ProviderError
+            lower = err_text.lower()
+            non_retryable = (
+                "does not support tools" in lower
+                or "model not found" in lower
+                or status == 404
+            )
+            raise ProviderError(
+                f"ollama {status} for model={model_id!r}: {err_text or '(no body)'}",
+                retryable=not non_retryable,
             )
         data = resp.json() if hasattr(resp, "json") else resp
         return _response_to_reply(data, model_id)
