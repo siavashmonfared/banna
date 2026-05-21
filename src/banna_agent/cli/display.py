@@ -118,6 +118,50 @@ class StreamingEventLog(EventLog):
                 self._update_status("[dim]finalizing…[/dim]")
             return
 
+        if kind == EventKind.ASK_USER:
+            # Two-phase event: emitted once before blocking on the user
+            # (answered=False), and once after the reply lands
+            # (answered=True). Render only the pre-prompt phase here —
+            # the _CliUserIO prints the actual question prompt itself,
+            # and the post-reply trace flows naturally from the next
+            # PROPOSE. The batch-mode degradation also fires this with
+            # answered=False so non-interactive runs still see a line.
+            if not p.get("answered"):
+                question = p.get("question") or ""
+                prefix = self._step_prefix(ev.step)
+                if p.get("batch_mode"):
+                    # GAIA / CI: no human to answer; show that we
+                    # acknowledged the ask but moved on.
+                    self.console.print(
+                        f"{prefix}[dim]? ask_user (batch mode, skipped):[/dim] "
+                        f"[dim]{_short(question, 140)}[/dim]"
+                    )
+                else:
+                    self.console.print(
+                        f"{prefix}[cyan]? ask_user:[/cyan] {_short(question, 140)}"
+                    )
+                    self._update_status("[cyan]waiting for user…[/cyan]")
+            return
+
+        if kind == EventKind.PERMISSION:
+            tool = p.get("tool_name") or "?"
+            decision = p.get("decision") or "?"
+            prefix = self._step_prefix(ev.step)
+            # Color-code by outcome so the user can scan a long trace
+            # and immediately see what they approved vs denied.
+            color, glyph = {
+                "allow_once": ("green", "✓"),
+                "allow_always": ("green", "✓✓"),
+                "allow_always_remembered": ("dim", "✓"),
+                "deny": ("red", "✗"),
+            }.get(decision, ("yellow", "?"))
+            label = decision.replace("_", " ")
+            self.console.print(
+                f"{prefix}[{color}]{glyph} permission {label}[/{color}] "
+                f"[dim](tool: {tool})[/dim]"
+            )
+            return
+
         if kind == EventKind.TOOL_BATCH:
             names = p.get("tool_names") or []
             n = int(p.get("n") or len(names))
