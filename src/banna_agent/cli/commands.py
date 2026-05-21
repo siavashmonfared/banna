@@ -26,6 +26,7 @@ from .display import tools_table, turns_table
 # Add a name here once its validation run lands in `docs/evals/`.
 POLICY_NAMES = (
     "react",
+    "react+",
 )
 
 

@@ -24,6 +24,28 @@ from .types import (
     BudgetReason,
     Observation,
 )
+from .user_io import UserIO
+
+
+# Tools whose risk is high enough to require a per-call confirmation
+# when a UserIO is supplied. Pass 1 of permissions only gates
+# `run_shell` — everything else still runs through unchanged. Pass 2
+# extends this to `run_python` / `write_file` / `read_url` once the
+# UX shape has settled.
+_GATED_TOOLS: dict[str, str] = {
+    "run_shell": "exec",
+}
+
+
+def _call_signature(tool_name: str, args: dict[str, Any]) -> str:
+    """Stable hash for an (allow_always)-able call signature."""
+    import hashlib
+    import json
+    try:
+        canon = json.dumps(args, sort_keys=True, default=str)
+    except Exception:
+        canon = repr(sorted(args.items()) if isinstance(args, dict) else args)
+    return f"{tool_name}:{hashlib.sha256(canon.encode()).hexdigest()[:16]}"
 
 
 def _brief_tool_result(result: Any, ok: bool) -> str:
@@ -65,6 +87,7 @@ def _execute(
     action: Action,
     tools: ToolRegistry,
     log: EventLog | None,
+    user_io: UserIO | None = None,
 ) -> Observation:
     """Run one Action; return the Observation.
 
@@ -73,6 +96,11 @@ def _execute(
     converted to an error observation (the agent loop never dies).
     For FINAL_ANSWER the observation mirrors the answer and marks
     readiness to terminate.
+
+    For ASK_USER, the loop blocks on `user_io.ask(...)` when a UserIO
+    is provided; in batch mode (user_io=None) the action degrades to
+    a synthetic THINK so the trace is comparable to a non-interactive
+    run.
     """
     # Lift any LLM token usage the policy attached to action.meta onto the
     # Observation. Policies record `tokens_in/out` from their LLM call's
@@ -89,8 +117,24 @@ def _execute(
         return Observation(ok=True, text=action.answer, wall_s=0.0,
                            tokens_in=_t_in, tokens_out=_t_out)
 
+    if action.kind == ActionKind.ASK_USER:
+        return _execute_ask_user(state, action, log, user_io,
+                                 t_in=_t_in, t_out=_t_out)
+
     if action.kind == ActionKind.TOOL_CALL:
         name = action.tool_name or ""
+        # Permission gate (Pass 1): only `run_shell` is gated, and
+        # only when a UserIO is attached. Batch / GAIA runs (no
+        # UserIO) bypass entirely so existing eval traces don't shift.
+        if user_io is not None and name in _GATED_TOOLS:
+            decision_obs = _gate_tool_call(
+                state, name, action.tool_args, user_io, log,
+                step_idx=len(state.trace.steps),
+            )
+            if decision_obs is not None:
+                # Denied; synthetic error Observation returned. Don't
+                # invoke the tool.
+                return decision_obs
         tool = tools.get(name)
         step_idx = len(state.trace.steps)
         emit(
@@ -165,9 +209,117 @@ def _execute(
         return obs
 
     if action.kind == ActionKind.TOOL_BATCH:
-        return _execute_batch(state, action, tools, log)
+        return _execute_batch(state, action, tools, log, user_io)
 
     raise ValueError(f"unknown ActionKind: {action.kind}")
+
+
+def _execute_ask_user(
+    state: AgentState,
+    action: Action,
+    log: EventLog | None,
+    user_io: UserIO | None,
+    *,
+    t_in: int,
+    t_out: int,
+) -> Observation:
+    """Block on a user response, or degrade to a synthetic THINK in batch mode.
+
+    The question lives in ``action.text``. The user's reply becomes the
+    Observation's ``text`` and is appended to ``state.metadata['user_replies']``
+    so the policy can fold it into the next prompt as a user-role turn.
+    """
+    question = (action.text or "").strip()
+    step_idx = len(state.trace.steps)
+    if user_io is None:
+        # Batch mode: degrade to a marker THINK so the trace is
+        # comparable to a non-interactive run. The model sees the
+        # marker on its next tick and should commit a best-guess
+        # answer (the system prompt for react+ instructs this).
+        marker = "(no user available — proceeding with best guess)"
+        emit(log, run_id=state.trace.run_id, step=step_idx,
+             kind=EventKind.ASK_USER, question=question, answered=False,
+             batch_mode=True)
+        return Observation(ok=True, text=marker, wall_s=0.0,
+                           tokens_in=t_in, tokens_out=t_out)
+
+    emit(log, run_id=state.trace.run_id, step=step_idx,
+         kind=EventKind.ASK_USER, question=question, answered=False,
+         batch_mode=False)
+    try:
+        reply = user_io.ask(question)
+    except (EOFError, KeyboardInterrupt):
+        reply = ""
+    reply = (reply or "").strip()
+    # Stash for the policy to fold into the prompt.
+    state.metadata.setdefault("user_replies", []).append({
+        "step": step_idx,
+        "question": question,
+        "reply": reply,
+    })
+    emit(log, run_id=state.trace.run_id, step=step_idx,
+         kind=EventKind.ASK_USER, question=question, answered=True,
+         reply_chars=len(reply))
+    return Observation(
+        ok=bool(reply),
+        text=reply or "(no reply)",
+        data={"question": question, "reply": reply},
+        wall_s=0.0,
+        tokens_in=t_in,
+        tokens_out=t_out,
+    )
+
+
+def _gate_tool_call(
+    state: AgentState,
+    tool_name: str,
+    args: dict[str, Any],
+    user_io: UserIO,
+    log: EventLog | None,
+    *,
+    step_idx: int,
+) -> Observation | None:
+    """Ask the user whether this call is allowed. Returns:
+
+    * None — call is approved, caller should proceed with the tool invocation.
+    * Observation(ok=False) — call was denied; caller skips invocation
+      and surfaces the synthetic error to the policy.
+
+    "allow_always" memoizes the call signature in
+    ``state.metadata['allowed_call_sigs']`` so the user isn't pestered
+    with the same prompt repeatedly in one session.
+    """
+    sig = _call_signature(tool_name, args or {})
+    allowed = state.metadata.setdefault("allowed_call_sigs", set())
+    if sig in allowed:
+        emit(log, run_id=state.trace.run_id, step=step_idx,
+             kind=EventKind.PERMISSION, tool_name=tool_name,
+             decision="allow_always_remembered", sig=sig)
+        return None
+    risk = _GATED_TOOLS.get(tool_name, "exec")
+    try:
+        decision = user_io.confirm(tool_name=tool_name, args=args or {}, risk=risk)
+    except (EOFError, KeyboardInterrupt):
+        decision = "deny"
+    emit(log, run_id=state.trace.run_id, step=step_idx,
+         kind=EventKind.PERMISSION, tool_name=tool_name,
+         decision=decision, sig=sig)
+    if decision == "allow_always":
+        allowed.add(sig)
+        return None
+    if decision == "allow_once":
+        return None
+    # Deny: synthesize an error Observation the policy will see as a
+    # tool failure. The model can then pick another tool, ask the user
+    # to relax the restriction, or commit a "can't do it" final answer.
+    err = (
+        f"user denied tool call: {tool_name}. "
+        f"You do not have permission to run this tool with these args. "
+        f"Pick a different tool, ask the user with `ask_user` whether to "
+        f"proceed differently, or commit a final answer explaining why "
+        f"you can't complete the request."
+    )
+    return Observation(ok=False, error=err, data={"error": err})
 
 
 def _auto_register_evidence(
@@ -205,6 +357,7 @@ def _execute_batch(
     action: Action,
     tools: ToolRegistry,
     log: EventLog | None,
+    user_io: UserIO | None = None,
 ) -> Observation:
     """Dispatch a TOOL_BATCH action: run all sub-calls in parallel.
 
@@ -243,6 +396,22 @@ def _execute_batch(
         n=len(calls),
     )
 
+    # Pre-flight permission gate for gated tools in the batch. We
+    # *serialize* the prompts (one at a time) — issuing modal prompts
+    # inside the parallel pool would interleave terminal output. After
+    # all decisions are collected, the pool runs the allowed sub-calls
+    # in parallel; denied sub-calls get a synthetic error result.
+    denied: dict[int, str] = {}
+    if user_io is not None:
+        for i, call in enumerate(calls):
+            if call["name"] in _GATED_TOOLS:
+                gate = _gate_tool_call(
+                    state, call["name"], call["args"], user_io, log,
+                    step_idx=step_idx,
+                )
+                if gate is not None:
+                    denied[i] = gate.error or "user denied tool call"
+
     def _run_one(call: dict[str, Any]) -> dict[str, Any]:
         name = call["name"]
         args = call["args"]
@@ -262,9 +431,26 @@ def _execute_batch(
     # Cap parallelism. 5 is enough for the GAIA-shaped workloads we see
     # (1–3 read_url/search in a batch); raising it further risks rate
     # limits on the provider side.
-    max_workers = max(1, min(len(calls), 5))
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        results = list(pool.map(_run_one, calls))
+    runnable_indices = [i for i in range(len(calls)) if i not in denied]
+    runnable_calls = [calls[i] for i in runnable_indices]
+    if runnable_calls:
+        max_workers = max(1, min(len(runnable_calls), 5))
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            run_results = list(pool.map(_run_one, runnable_calls))
+    else:
+        run_results = []
+    # Stitch results back in original order, splicing synthetic
+    # denied-error results into the slots whose calls were denied.
+    results: list[dict[str, Any]] = []
+    rr = iter(run_results)
+    for i, call in enumerate(calls):
+        if i in denied:
+            results.append({
+                "name": call["name"], "ok": False, "result": None,
+                "error": denied[i], "wall_s": 0.0, "args": call["args"],
+            })
+        else:
+            results.append(next(rr))
 
     # Re-emit per-call TOOL_CALL/TOOL_RESULT events in submission order so
     # log consumers see a deterministic sequence.
@@ -329,6 +515,7 @@ def run_policy(
     tools: ToolRegistry,
     log: EventLog | None = None,
     compactor: Any = None,
+    user_io: UserIO | None = None,
 ) -> AgentState:
     """Run the inner loop until done or budget-capped. Returns the state.
 
@@ -336,6 +523,13 @@ def run_policy(
     `compactor`, if supplied, is a `memory.compactor.TraceCompactor`-shaped
     object: `should_compact(state) -> bool` and `compact(state) -> dict`.
     Called at each tick before the policy proposes.
+
+    `user_io`, if supplied, enables human-in-the-loop behavior:
+    `ASK_USER` actions block on `user_io.ask(...)`, and gated tool
+    calls (currently `run_shell`) prompt via `user_io.confirm(...)`.
+    When `None` (the default), the loop is in batch mode — `ASK_USER`
+    degrades to a marker THINK and gated tools auto-allow. This keeps
+    GAIA / CI runs producing identical traces to the old behavior.
     """
     tracker = BudgetTracker(state.budget)
     tracker.start()
@@ -378,7 +572,7 @@ def run_policy(
                         synth_meta.setdefault("repair", True)
                         synth_meta.setdefault("synthesis_on_exhaustion", True)
                         synth_action.meta = synth_meta
-                        obs = _execute(state, synth_action, tools, log)
+                        obs = _execute(state, synth_action, tools, log, user_io)
                         state.append_step(synth_action, obs)
                         emit(log, run_id=state.trace.run_id,
                              step=len(state.trace.steps) - 1,
@@ -428,7 +622,7 @@ def run_policy(
         # scorer applies its own normalization for the comparison; that
         # is appropriate and stays untouched.
 
-        obs = _execute(state, action, tools, log)
+        obs = _execute(state, action, tools, log, user_io)
         step = state.append_step(action, obs)
 
         # Estimate USD cost for this tick's LLM usage. Provider/model are

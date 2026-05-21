@@ -38,6 +38,8 @@ class EventKind:
     TOOL_CALL = "tool_call"         # a tool was invoked
     TOOL_RESULT = "tool_result"     # a tool returned
     TOOL_BATCH = "tool_batch"       # ≥2 tools dispatched concurrently (boundary marker)
+    ASK_USER = "ask_user"           # policy paused to ask the user
+    PERMISSION = "permission"       # user was asked to confirm a tool call
     OBSERVATION = "observation"     # a Step was appended
     BUDGET = "budget"               # budget state changed
     VERIFIER = "verifier"           # a verifier ran

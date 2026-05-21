@@ -134,6 +134,17 @@ class MyAgentApp:
             tool_list.append(make_memory_tool(self.session.memory_store))
         self.tools = ToolRegistry(tool_list)
 
+    def _make_user_io(self) -> Any:
+        """Build a UserIO for the loop's ask_user + permission gate.
+
+        Returns ``None`` when the active policy doesn't use either
+        feature — keeps `react`'s wire-level behavior identical to
+        before this change (no extra prompts, identical trace shape).
+        """
+        if self.policy_name not in ("react+",):
+            return None
+        return _CliUserIO(console=self.console)
+
     def _confirm_shell(self, command: str, matched: str) -> bool:
         """Pause the agent and ask the user before running a risky shell command.
 
@@ -174,6 +185,9 @@ class MyAgentApp:
         name = self.policy_name
         if name == "react":
             return ReActPolicy(model=self.model)
+        if name == "react+":
+            from ..policies.react_plus import ReActPlusPolicy
+            return ReActPlusPolicy(model=self.model)
         if name == "planner_react":
             return PlannerReActPolicy(model=self.model)
         if name == "bfs_over_plans":
@@ -276,7 +290,8 @@ class MyAgentApp:
             try:
                 state = run_policy(state, self.policy, llm=self.llm,
                                    tools=self.tools, log=log,
-                                   compactor=compactor)
+                                   compactor=compactor,
+                                   user_io=self._make_user_io())
             except KeyboardInterrupt:
                 err = "interrupted by user (Ctrl-C)"
             except Exception as exc:
@@ -447,6 +462,67 @@ class MyAgentApp:
                 self._run_task(line)
             except Exception as exc:
                 self.console.print(f"[red]task crashed:[/red] {exc}")
+
+
+# ---------------------------------------------------------------------------
+# Interactive UserIO for `react+`
+# ---------------------------------------------------------------------------
+
+
+class _CliUserIO:
+    """Rich-backed UserIO for the interactive REPL.
+
+    Implements the `UserIO` Protocol (see core/user_io.py):
+      • `ask(question)`: shows the model's question in a styled box,
+        reads one line from stdin, returns it (or empty string on EOF).
+      • `confirm(...)`: shows the tool name + truncated args, prompts
+        with allow_once / allow_always / deny.
+
+    Lives in app.py because it's CLI-shaped; the protocol is in core/
+    so non-CLI surfaces (web, test harness) can supply their own.
+    """
+
+    def __init__(self, console: Console) -> None:
+        self.console = console
+
+    def ask(self, question: str) -> str:
+        self.console.print()
+        self.console.print(f"[cyan]? agent asks:[/cyan] {question}")
+        try:
+            return input("[your reply] > ").strip()
+        except (EOFError, KeyboardInterrupt):
+            self.console.print("[dim](no reply)[/dim]")
+            return ""
+
+    def confirm(self, *, tool_name: str, args: dict, risk: str) -> str:
+        import json as _json
+        try:
+            args_disp = _json.dumps(args, indent=2, default=str)
+        except Exception:
+            args_disp = repr(args)
+        # Truncate long arg blobs so the modal stays scannable.
+        if len(args_disp) > 600:
+            args_disp = args_disp[:600] + "\n  …(truncated)"
+        self.console.print()
+        self.console.print(
+            f"[yellow]⚠ permission needed[/yellow]  "
+            f"[bold]{tool_name}[/bold] [dim](risk: {risk})[/dim]"
+        )
+        for line in args_disp.splitlines():
+            self.console.print(f"  [dim]{line}[/dim]")
+        self.console.print(
+            "[1] allow once   [2] allow always (this session)   [3] deny"
+        )
+        try:
+            raw = input("> [1/2/3, default 3]: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            self.console.print("[red]denied[/red]")
+            return "deny"
+        if raw == "1":
+            return "allow_once"
+        if raw == "2":
+            return "allow_always"
+        return "deny"
 
 
 # ---------------------------------------------------------------------------

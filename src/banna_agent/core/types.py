@@ -41,6 +41,7 @@ class ActionKind(str, Enum):
     THINK = "think"            # internal reasoning, no side effect
     TOOL_CALL = "tool_call"    # invoke a tool with arguments
     TOOL_BATCH = "tool_batch"  # invoke ≥2 independent tools concurrently
+    ASK_USER = "ask_user"      # pause loop, ask user a clarifying question
     FINAL_ANSWER = "final_answer"  # terminate with an answer
 
 
