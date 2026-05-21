@@ -92,6 +92,20 @@ The `react` loop ships with five structural choices that meaningfully change beh
 - **No video / image-reasoning tools.** A small number of GAIA tasks require video frame extraction or vision-grade image reasoning; those are structurally unreachable without additional tools.
 - **No OS-level sandboxing of tools.** `run_shell` is subject to a confirmation prompt and a denylist, but the tool family runs in the same OS process as the agent. Running this on untrusted user input is out of scope until container-based isolation lands.
 
+## Why not wrap `react` with a verifier-retry loop?
+
+A natural question — and one we measured. Two alternative policies were validated against bare `react` on the same model, same substrate, same task set:
+
+| Policy | Accuracy | Δ vs. bare `react` |
+|---|---|---|
+| `react` (bare) | **42.4 %** (70 / 165) | — |
+| `react` + verifier-retry with self-consistency checks (Format / Arithmetic / Citation / Coverage on the trace) | 37.6 % (62 / 165) | **−4.8 pp** |
+| `react` + verifier-retry with reflexion-style closure check (LLM-as-critic grading the answer against the user's stated constraints) | 40.0 % (66 / 165) | **−2.4 pp** |
+
+Both wrapping strategies regressed on this model. Mechanism: each elaboration consumes a slice of the model's reasoning capacity (extra LLM call, retry tick has to reconstruct context, false-positive retries discard correct answers). On `gpt-5-nano`, there isn't enough headroom for that overhead to pay off — the retry tick degrades the answer more often than it improves it. The reflexion variant is closer to neutral because it skips silently on questions with no extractable constraints, but still regresses on net.
+
+The plausible interpretation: published wrapping techniques (Reflexion, verifier-retry, planner-first agents) all benchmark on GPT-4-tier models where the capacity headroom absorbs the overhead. On a smaller model, the overhead dominates. A re-run of this ablation on a larger model (e.g. Sonnet) is queued; the prediction is that the ordering flips and extrinsic verification starts to pay.
+
 ## Ongoing work
 
-Further policies (planner-based decomposition, verifier-wrapped retry with extrinsic constraint checking, best-of-N selection) ship in `src/banna_agent/policies/` but are not exposed in the CLI until each has a validation run behind it. Each row is one YAML config under `experiments/02_gaia_full/configs/ablation/`. Validated rows graduate into the CLI gate as they land.
+Further policies (planner-based decomposition, best-of-N selection) ship in `src/banna_agent/policies/` but are not exposed in the CLI. Each is one YAML config under `experiments/02_gaia_full/configs/ablation/`. Validated rows graduate into the CLI gate as they land.
