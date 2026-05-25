@@ -287,17 +287,28 @@ class MyAgentApp:
             log = StreamingEventLog(
                 console=self.console, status=status, state=state,
             )
+            user_io = self._make_user_io()
+            # The thinking spinner is a live renderer that owns the
+            # terminal; a bare input() underneath it gets repainted over
+            # and reads nothing. Hand the user_io the spinner handle so
+            # it can stop/restart it around each blocking prompt.
+            if user_io is not None and hasattr(user_io, "bind_status"):
+                user_io.bind_status(status)
             try:
                 state = run_policy(state, self.policy, llm=self.llm,
                                    tools=self.tools, log=log,
                                    compactor=compactor,
-                                   user_io=self._make_user_io())
+                                   user_io=user_io)
             except KeyboardInterrupt:
                 err = "interrupted by user (Ctrl-C)"
             except Exception as exc:
                 err = f"{type(exc).__name__}: {exc}"
 
-        wall_s = time.monotonic() - t0
+        # Prefer the budget's elapsed wall: it excludes time the loop sat
+        # paused on an ask_user / permission prompt (see BudgetTracker.pause).
+        # Falls back to raw monotonic if the loop never ticked the budget
+        # (e.g. it errored before the first step).
+        wall_s = getattr(state.budget, "elapsed_wall_s", 0.0) or (time.monotonic() - t0)
         answer = state.trace.final_answer or ""
         budget_reason = "ok"
         for ev in reversed(log.events):
@@ -484,15 +495,38 @@ class _CliUserIO:
 
     def __init__(self, console: Console) -> None:
         self.console = console
+        self._status: Any = None
+
+    def bind_status(self, status: Any) -> None:
+        """Attach the active thinking-spinner so blocking prompts can
+        pause it (it's a live renderer that otherwise eats stdin)."""
+        self._status = status
+
+    def _pause_spinner(self) -> None:
+        if self._status is not None:
+            try:
+                self._status.stop()
+            except Exception:
+                pass
+
+    def _resume_spinner(self) -> None:
+        if self._status is not None:
+            try:
+                self._status.start()
+            except Exception:
+                pass
 
     def ask(self, question: str) -> str:
         self.console.print()
         self.console.print(f"[cyan]? agent asks:[/cyan] {question}")
+        self._pause_spinner()
         try:
             return input("[your reply] > ").strip()
         except (EOFError, KeyboardInterrupt):
             self.console.print("[dim](no reply)[/dim]")
             return ""
+        finally:
+            self._resume_spinner()
 
     def confirm(self, *, tool_name: str, args: dict, risk: str) -> str:
         import json as _json
@@ -513,11 +547,14 @@ class _CliUserIO:
         self.console.print(
             "[1] allow once   [2] allow always (this session)   [3] deny"
         )
+        self._pause_spinner()
         try:
             raw = input("> [1/2/3, default 3]: ").strip()
         except (EOFError, KeyboardInterrupt):
             self.console.print("[red]denied[/red]")
             return "deny"
+        finally:
+            self._resume_spinner()
         if raw == "1":
             return "allow_once"
         if raw == "2":

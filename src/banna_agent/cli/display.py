@@ -276,6 +276,20 @@ class StreamingEventLog(EventLog):
                         "[dim]hint:[/dim] set [bold]AWS_REGION[/bold] for "
                         "Bedrock (e.g. [bold]export AWS_REGION=us-east-1[/bold])."
                     )
+            else:
+                # Read-timeouts are retryable (not provider_error), but on a
+                # slow local model they burn the whole wall budget without
+                # producing anything. Tell the user which knobs help instead
+                # of leaving them with a raw ReadTimeout + "(no answer)".
+                low = str(err).lower()
+                if "readtimeout" in low or "read timed out" in low or "timed out" in low:
+                    self.console.print(
+                        "[dim]hint:[/dim] the model took too long to respond "
+                        "(read timeout). A local reasoning model may be too "
+                        "slow for the wall budget — pick a faster/smaller model "
+                        "with [bold]/model[/bold], or raise the wall budget with "
+                        "[bold]/budget wall=300[/bold]."
+                    )
             return
 
         if kind == EventKind.COMPACT:

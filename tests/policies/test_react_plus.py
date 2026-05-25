@@ -9,7 +9,7 @@ import pytest
 from banna_agent.core.agent import _execute, run_policy
 from banna_agent.core.budget import Budget
 from banna_agent.core.state import AgentState
-from banna_agent.core.types import Action, ActionKind, Trace
+from banna_agent.core.types import Action, ActionKind, Observation, Trace
 from banna_agent.core.user_io import UserIO
 from banna_agent.llm.base import (
     ContentBlock,
@@ -94,6 +94,62 @@ def test_ask_user_empty_reply_observation_marked_not_ok() -> None:
     obs = _execute(state, action, ToolRegistry(), log=None, user_io=user_io)
 
     assert obs.ok is False
+
+
+def test_ask_user_block_time_excluded_from_wall_budget() -> None:
+    """Human think-time at an ask_user prompt must not count against the
+    agent's wall budget. Regression for the gpt-oss:20b session where a
+    ~310s pause at the prompt tripped budget_wall (200s)."""
+    import time
+
+    from banna_agent.core.budget import BudgetTracker
+
+    @dataclass
+    class _SlowUserIO:
+        delay: float = 0.3
+
+        def ask(self, question: str) -> str:
+            time.sleep(self.delay)  # simulate a human deliberating
+            return "ok"
+
+        def confirm(self, *, tool_name, args, risk) -> str:  # pragma: no cover
+            return "deny"
+
+    state = _state()
+    state.budget = Budget(max_steps=10, max_wall_s=0.1)  # tiny wall cap
+    tracker = BudgetTracker(state.budget)
+    tracker.start()
+    action = Action(kind=ActionKind.ASK_USER, text="?", meta={})
+
+    obs = _execute(state, action, ToolRegistry(), log=None,
+                   user_io=_SlowUserIO(delay=0.3), budget=tracker)
+
+    assert obs.text == "ok"
+    # The 0.3s human pause is 3x the wall cap, yet the budget must be OK
+    # because pause()/resume() shifted the timer past it.
+    assert tracker.check().value == "ok"
+
+
+def test_synthesis_does_not_echo_ask_user_question() -> None:
+    """When the budget trips on an unanswered ASK_USER, the cheap
+    synthesis fallback must not return the clarifying question as the
+    final answer. Regression for the gpt-oss:20b session that ended
+    FINAL_ANSWER='What would you like me to help you with?'."""
+    state = _state(question="top 5 Guardian US headlines today")
+    q = "What would you like me to help you with?"
+    state.append_step(
+        Action(kind=ActionKind.ASK_USER, text=q, meta={}),
+        Observation(ok=False, text="(no reply)"),
+    )
+    policy = ReActPlusPolicy(model="gpt-oss:20b")
+
+    # llm=None forces the cheap branch (the one that walked the trace).
+    synth = policy.synthesize_on_exhaustion(state, llm=None, tools=None)
+
+    # Either None (no answer available) or some best guess — but never
+    # the clarifying question parroted back.
+    if synth is not None:
+        assert synth.answer != q
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +282,39 @@ def test_react_plus_intercepts_ask_user_tool_call() -> None:
     assert action.kind == ActionKind.ASK_USER
     assert action.text == "Which file did you mean?"
     assert action.meta.get("via_ask_user_tool") is True
+
+
+def test_ask_user_reply_is_folded_into_conversation_history() -> None:
+    """After an answered ASK_USER step, the built message history must
+    contain both the question (assistant) and the reply (user). Regression
+    for the session where the model re-asked the same clarifying question
+    3x because the answers never reached its context."""
+    policy = ReActPlusPolicy()
+    state = _state(question="top 5 restaurants in Highland Park")
+    state.append_step(
+        Action(kind=ActionKind.ASK_USER,
+               text="Which rating source — Google, Yelp, or critics?", meta={}),
+        Observation(ok=True, text="use google ratings",
+                    data={"question": "Which rating source — Google, Yelp, or critics?",
+                          "reply": "use google ratings"}),
+    )
+
+    msgs = policy._history(state)
+    flat = " ".join(
+        b.text or ""
+        for m in msgs for b in m.content
+        if getattr(b, "kind", None) == "text"
+    )
+    assert "Which rating source" in flat   # the question is replayed
+    assert "use google ratings" in flat    # the answer is replayed
+    # The reply must be a user-role turn (so the model treats it as input,
+    # not its own thought).
+    assert any(
+        m.role == "user" and any(
+            (b.text or "") == "use google ratings" for b in m.content
+        )
+        for m in msgs
+    )
 
 
 def test_react_plus_advertises_ask_user_in_tool_specs() -> None:

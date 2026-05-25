@@ -88,6 +88,7 @@ def _execute(
     tools: ToolRegistry,
     log: EventLog | None,
     user_io: UserIO | None = None,
+    budget: "BudgetTracker | None" = None,
 ) -> Observation:
     """Run one Action; return the Observation.
 
@@ -119,7 +120,7 @@ def _execute(
 
     if action.kind == ActionKind.ASK_USER:
         return _execute_ask_user(state, action, log, user_io,
-                                 t_in=_t_in, t_out=_t_out)
+                                 t_in=_t_in, t_out=_t_out, budget=budget)
 
     if action.kind == ActionKind.TOOL_CALL:
         name = action.tool_name or ""
@@ -129,7 +130,7 @@ def _execute(
         if user_io is not None and name in _GATED_TOOLS:
             decision_obs = _gate_tool_call(
                 state, name, action.tool_args, user_io, log,
-                step_idx=len(state.trace.steps),
+                step_idx=len(state.trace.steps), budget=budget,
             )
             if decision_obs is not None:
                 # Denied; synthetic error Observation returned. Don't
@@ -209,7 +210,7 @@ def _execute(
         return obs
 
     if action.kind == ActionKind.TOOL_BATCH:
-        return _execute_batch(state, action, tools, log, user_io)
+        return _execute_batch(state, action, tools, log, user_io, budget=budget)
 
     raise ValueError(f"unknown ActionKind: {action.kind}")
 
@@ -222,6 +223,7 @@ def _execute_ask_user(
     *,
     t_in: int,
     t_out: int,
+    budget: "BudgetTracker | None" = None,
 ) -> Observation:
     """Block on a user response, or degrade to a synthetic THINK in batch mode.
 
@@ -246,10 +248,18 @@ def _execute_ask_user(
     emit(log, run_id=state.trace.run_id, step=step_idx,
          kind=EventKind.ASK_USER, question=question, answered=False,
          batch_mode=False)
+    # Human think-time must not count against the agent's wall budget,
+    # which bounds *agent* compute. Pause the timer across the blocking
+    # ask() and resume once we have a reply.
+    if budget is not None:
+        budget.pause()
     try:
         reply = user_io.ask(question)
     except (EOFError, KeyboardInterrupt):
         reply = ""
+    finally:
+        if budget is not None:
+            budget.resume()
     reply = (reply or "").strip()
     # Stash for the policy to fold into the prompt.
     state.metadata.setdefault("user_replies", []).append({
@@ -278,6 +288,7 @@ def _gate_tool_call(
     log: EventLog | None,
     *,
     step_idx: int,
+    budget: "BudgetTracker | None" = None,
 ) -> Observation | None:
     """Ask the user whether this call is allowed. Returns:
 
@@ -297,10 +308,16 @@ def _gate_tool_call(
              decision="allow_always_remembered", sig=sig)
         return None
     risk = _GATED_TOOLS.get(tool_name, "exec")
+    # Don't bill the user's decision time against the agent wall budget.
+    if budget is not None:
+        budget.pause()
     try:
         decision = user_io.confirm(tool_name=tool_name, args=args or {}, risk=risk)
     except (EOFError, KeyboardInterrupt):
         decision = "deny"
+    finally:
+        if budget is not None:
+            budget.resume()
     emit(log, run_id=state.trace.run_id, step=step_idx,
          kind=EventKind.PERMISSION, tool_name=tool_name,
          decision=decision, sig=sig)
@@ -358,6 +375,7 @@ def _execute_batch(
     tools: ToolRegistry,
     log: EventLog | None,
     user_io: UserIO | None = None,
+    budget: "BudgetTracker | None" = None,
 ) -> Observation:
     """Dispatch a TOOL_BATCH action: run all sub-calls in parallel.
 
@@ -407,7 +425,7 @@ def _execute_batch(
             if call["name"] in _GATED_TOOLS:
                 gate = _gate_tool_call(
                     state, call["name"], call["args"], user_io, log,
-                    step_idx=step_idx,
+                    step_idx=step_idx, budget=budget,
                 )
                 if gate is not None:
                     denied[i] = gate.error or "user denied tool call"
@@ -572,7 +590,8 @@ def run_policy(
                         synth_meta.setdefault("repair", True)
                         synth_meta.setdefault("synthesis_on_exhaustion", True)
                         synth_action.meta = synth_meta
-                        obs = _execute(state, synth_action, tools, log, user_io)
+                        obs = _execute(state, synth_action, tools, log, user_io,
+                                       budget=tracker)
                         state.append_step(synth_action, obs)
                         emit(log, run_id=state.trace.run_id,
                              step=len(state.trace.steps) - 1,
@@ -622,7 +641,7 @@ def run_policy(
         # scorer applies its own normalization for the comparison; that
         # is appropriate and stays untouched.
 
-        obs = _execute(state, action, tools, log, user_io)
+        obs = _execute(state, action, tools, log, user_io, budget=tracker)
         step = state.append_step(action, obs)
 
         # Estimate USD cost for this tick's LLM usage. Provider/model are

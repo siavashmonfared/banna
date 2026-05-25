@@ -358,6 +358,31 @@ class ReActPolicy:
                         is_error=not obs.ok,
                     )],
                 ))
+            elif act.kind == ActionKind.ASK_USER:
+                # Replay the clarifying exchange so the model SEES its own
+                # question and the user's answer. Without this the Q&A is
+                # dropped from history and the model re-asks the same
+                # question every turn (observed: 3x re-ask on a single
+                # task). react+ only — bare react never emits ASK_USER, so
+                # this branch is dead there and the 42.4% trace is unchanged.
+                question = (act.text or "").strip()
+                reply = ""
+                if isinstance(obs.data, dict):
+                    reply = str(obs.data.get("reply") or "").strip()
+                if not reply:
+                    reply = (obs.text or "").strip()
+                if question:
+                    msgs.append(Message(
+                        role="assistant",
+                        content=[ContentBlock(kind="text", text=question)],
+                    ))
+                msgs.append(Message(
+                    role="user",
+                    content=[ContentBlock(
+                        kind="text",
+                        text=reply or "(no answer provided)",
+                    )],
+                ))
             # FINAL_ANSWER should terminate the loop, so we don't project it.
 
         # Step-pressure nudge — once we've used ≥ commit_pressure_threshold
@@ -725,6 +750,13 @@ class ReActPolicy:
                         },
                     )
             for step in reversed(state.trace.steps):
+                # An ASK_USER step's `text` is the clarifying *question*,
+                # never an answer. Skipping it stops synthesis from
+                # echoing "What would you like me to help with?" back as
+                # the final answer (react+ only; bare react has no
+                # ASK_USER steps, so this is a no-op there).
+                if step.action.kind == ActionKind.ASK_USER:
+                    continue
                 m = step.action.meta or {}
                 if m.get("empty_reply"):
                     continue

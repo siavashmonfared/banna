@@ -30,6 +30,7 @@ class BudgetTracker:
 
     budget: Budget
     _t0: float | None = field(default=None, init=False, repr=False)
+    _paused_at: float | None = field(default=None, init=False, repr=False)
 
     def start(self) -> None:
         self._t0 = time.monotonic()
@@ -38,6 +39,25 @@ class BudgetTracker:
     @property
     def started(self) -> bool:
         return self._t0 is not None
+
+    def pause(self) -> None:
+        """Stop the wall clock while blocked on a human.
+
+        The wall budget bounds *agent* compute, not how long a person
+        takes to answer an `ask_user` prompt or a permission box. Time
+        spent paused is excluded from `elapsed_wall_s`. Idempotent.
+        """
+        if self._t0 is not None and self._paused_at is None:
+            self._paused_at = time.monotonic()
+
+    def resume(self) -> None:
+        """Resume after a `pause()`, shifting the start forward so the
+        paused interval never counts. No-op if not paused.
+        """
+        if self._t0 is not None and self._paused_at is not None:
+            self._t0 += time.monotonic() - self._paused_at
+            self.budget.started_mono = self._t0
+        self._paused_at = None
 
     def tick(
         self,
