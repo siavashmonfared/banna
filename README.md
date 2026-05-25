@@ -43,7 +43,7 @@ banna --policy react --provider openai --model gpt-5-nano
 ```
 $ banna --policy react --provider openai --model gpt-5-nano
 
-● banna · v0.1.1   provider=openai   model=gpt-5-nano   policy=react
+● banna · v0.1.2   provider=openai   model=gpt-5-nano   policy=react
 
 > How many studio albums did Mercedes Sosa release between 2000 and 2009?
 
