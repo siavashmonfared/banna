@@ -1,8 +1,10 @@
 """Shell execution tool.
 
-Same philosophy as `tools/python_sandbox.py` — not a security sandbox.
-Subprocess with timeout + captured stdio. Security is the deployer's
-problem (firejail, bubblewrap, Docker, gVisor, etc.).
+Execution is delegated to a `SandboxBackend` (see `tools/sandbox.py`):
+`process` (default host subprocess) or `docker` (throwaway container with
+no network and a read-only rootfs). The default backend is not a security
+sandbox — it runs on the host with the agent's filesystem, network, and
+credentials; pick `docker` for untrusted input.
 
 Defaults prefer safety:
   - shell=False, so `command` is an argv list, not a shell string.
@@ -15,28 +17,28 @@ Permission gate (interactive use):
     callback. When the command matches a risky pattern (pip install,
     apt install, sudo, rm -rf, curl|sh, etc.), the handler calls
     `confirm` and refuses if it returns False. When `confirm` is None
-    (e.g. in headless GAIA runs), the tool runs without prompting —
-    same behavior as before.
+    (e.g. in headless GAIA runs), the tool runs without prompting.
 
 Workspace:
-  - If `cwd` is passed, the subprocess runs there. Otherwise, current cwd.
-  - Environment variables aren't sanitized; the subprocess inherits the
-    agent's env. Callers should scrub secrets from env before running
-    an untrusted workspace.
+  - If `cwd` is passed, the subprocess runs there (or is bind-mounted at
+    /work under the docker backend). Otherwise, current cwd.
+  - Environment variables aren't sanitized under the process backend; the
+    subprocess inherits the agent's env. The docker backend starts from a
+    clean container environment.
 """
 from __future__ import annotations
 
 import re
 import shlex
-import subprocess
-import time
 from typing import Any, Callable
 
 from .base import JsonTool
-
-
-DEFAULT_TIMEOUT_S = 30.0
-DEFAULT_MAX_OUTPUT_CHARS = 20_000
+from .sandbox import (
+    DEFAULT_MAX_OUTPUT_CHARS,
+    DEFAULT_TIMEOUT_S,
+    SandboxBackend,
+    resolve_sandbox_backend,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -84,74 +86,21 @@ def run_shell(
     shell: bool = True,
     timeout_s: float = DEFAULT_TIMEOUT_S,
     max_output_chars: int = DEFAULT_MAX_OUTPUT_CHARS,
+    backend: "str | SandboxBackend | None" = None,
 ) -> dict[str, Any]:
-    """Run a shell command. Returns {ok, returncode, stdout, stderr, timeout, wall_s}."""
-    if shell:
-        cmd: Any = command if isinstance(command, str) else " ".join(shlex.quote(a) for a in command)
-    else:
-        cmd = command if isinstance(command, list) else shlex.split(command)
+    """Run a shell command via the selected sandbox backend.
 
-    t0 = time.monotonic()
-    try:
-        proc = subprocess.run(
-            cmd,
-            shell=shell,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-        )
-        wall = time.monotonic() - t0
-        stdout = proc.stdout or ""
-        stderr = proc.stderr or ""
-        trunc_out = len(stdout) > max_output_chars
-        trunc_err = len(stderr) > max_output_chars
-        if trunc_out:
-            stdout = stdout[:max_output_chars]
-        if trunc_err:
-            stderr = stderr[:max_output_chars]
-        return {
-            "ok": proc.returncode == 0,
-            "returncode": proc.returncode,
-            "stdout": stdout,
-            "stderr": stderr,
-            "timeout": False,
-            "truncated_stdout": trunc_out,
-            "truncated_stderr": trunc_err,
-            "wall_s": wall,
-        }
-    except subprocess.TimeoutExpired as e:
-        wall = time.monotonic() - t0
-        out = e.stdout or ""
-        err = e.stderr or ""
-        if isinstance(out, bytes):
-            out = out.decode("utf-8", errors="replace")
-        if isinstance(err, bytes):
-            err = err.decode("utf-8", errors="replace")
-        return {
-            "ok": False,
-            "returncode": -1,
-            "stdout": out[:max_output_chars],
-            "stderr": err[:max_output_chars],
-            "timeout": True,
-            "truncated_stdout": len(out) > max_output_chars,
-            "truncated_stderr": len(err) > max_output_chars,
-            "wall_s": wall,
-        }
-    except FileNotFoundError as exc:
-        return {
-            "ok": False,
-            "returncode": -2,
-            "stdout": "",
-            "stderr": f"FileNotFoundError: {exc}",
-            "timeout": False,
-            "truncated_stdout": False,
-            "truncated_stderr": False,
-            "wall_s": time.monotonic() - t0,
-        }
+    Returns {ok, returncode, stdout, stderr, timeout, wall_s, …}. `backend`
+    selects the isolation policy; None resolves from BANNA_SANDBOX
+    (default "process")."""
+    return resolve_sandbox_backend(backend).run_shell(
+        command, cwd=cwd, shell=shell, timeout_s=timeout_s,
+        max_output_chars=max_output_chars,
+    )
 
 
-def _make_handler(confirm: ConfirmFn | None):
+def _make_handler(confirm: ConfirmFn | None,
+                  backend: "str | SandboxBackend | None" = None):
     def _handler(args: dict[str, Any]) -> dict[str, Any]:
         command = args.get("command")
         if not command or not isinstance(command, (str, list)):
@@ -186,6 +135,7 @@ def _make_handler(confirm: ConfirmFn | None):
             cwd=args.get("cwd") or None,
             shell=bool(args.get("shell", True)),
             timeout_s=float(args.get("timeout_s", DEFAULT_TIMEOUT_S)),
+            backend=backend,
         )
 
     return _handler
@@ -223,7 +173,10 @@ RUN_SHELL_SCHEMA: dict[str, Any] = {
 }
 
 
-def make_run_shell_tool(confirm: ConfirmFn | None = None) -> JsonTool:
+def make_run_shell_tool(
+    confirm: ConfirmFn | None = None,
+    sandbox: "str | SandboxBackend | None" = None,
+) -> JsonTool:
     """Build the run_shell tool.
 
     `confirm`, when provided, is a `(command, matched_pattern) -> bool`
@@ -231,17 +184,21 @@ def make_run_shell_tool(confirm: ConfirmFn | None = None) -> JsonTool:
     -rf, …) runs. Return True to allow, False to deny. None means no
     gate — fine for headless GAIA / batch use, dangerous for
     interactive REPLs.
+
+    `sandbox` selects the isolation backend ("process" / "docker" / a
+    backend instance); None resolves from BANNA_SANDBOX, default "process".
     """
     return JsonTool(
         name="run_shell",
         description=(
             "Execute a shell command in a subprocess with a wall-time limit. "
-            "Returns stdout, stderr, returncode, and timeout flag. Not a "
-            "security sandbox — don't run untrusted input without OS-level isolation. "
+            "Returns stdout, stderr, returncode, and timeout flag. The default "
+            "backend runs on the host (no OS-level isolation); start the agent "
+            "with --sandbox=docker to confine it to a network-less container. "
             "Privileged operations (pip install, sudo, rm -rf, etc.) require "
             "explicit user approval in interactive use."
         ),
         input_schema=RUN_SHELL_SCHEMA,
-        handler=_make_handler(confirm),
+        handler=_make_handler(confirm, sandbox),
         capabilities=frozenset({"sandbox", "shell", "write"}),
     )

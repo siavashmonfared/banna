@@ -191,7 +191,7 @@ Current status on this branch: **818 passed, 3 skipped** (skips require the opti
 
 ## Limitations
 
-- **No OS-level isolation for code execution.** `python_sandbox` runs model-emitted Python via `exec()` against a restricted namespace, and `run_shell` uses a regex allowlist. Both run in the same OS process as the agent and inherit the user's filesystem, network, and credentials. This is acceptable for a research harness on a developer's own machine, but not for executing untrusted input or running unattended on shared infrastructure. A Docker-backed sandbox is planned.
+- **Execution isolation is opt-in.** Code-running tools dispatch through a `SandboxBackend`. The default `process` backend runs each call as a host subprocess (real timeout and memory separation, but it inherits the user's filesystem, network, and credentials) — fine for a research harness on your own machine, not for untrusted input. For untrusted input or shared infrastructure, start the agent with `--sandbox=docker` (or `BANNA_SANDBOX=docker`): every `run_python` / `run_shell` call then executes in a throwaway container with no network, a read-only root filesystem, dropped capabilities, and cpu/memory/pid limits.
 - **Verifiers catch structural failures, not factual ones.** A coherent answer grounded in an incorrect source passes the verifiers and still fails GAIA.
 - **Single-agent.** There is no multi-agent delegation or coordination.
 - **Synchronous tools.** Tools are `dict → dict`; long-running or streaming tools (headless-browser sessions, multi-turn shells) would require a redesign.

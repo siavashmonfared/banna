@@ -97,6 +97,9 @@ class MyAgentApp:
     skills_harvest_quality_threshold: float = 0.7
 
     no_shell: bool = False
+    # Isolation backend for run_python / run_shell: "process" (host) or
+    # "docker" (network-less container). None resolves from BANNA_SANDBOX.
+    sandbox: str | None = None
     no_plan: bool = False
 
     console: Console = field(default_factory=_make_console)
@@ -120,14 +123,15 @@ class MyAgentApp:
             make_url_reader_tool(),
             make_file_reader_tool(),
             make_calculator_tool(),
-            make_python_sandbox_tool(),
+            make_python_sandbox_tool(sandbox=self.sandbox),
             make_list_files_tool(),
             make_grep_tool(),
         ]
         if not self.no_plan:
             tool_list.append(make_plan_tool())
         if not self.no_shell:
-            tool_list.append(make_run_shell_tool(confirm=self._confirm_shell))
+            tool_list.append(make_run_shell_tool(
+                confirm=self._confirm_shell, sandbox=self.sandbox))
         # Bind the memory tool to the session's memory store so writes
         # persist across turns within this session.
         if self.session.memory_store is not None:
@@ -597,6 +601,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                     help="Drop run_shell from the tool registry.")
     ap.add_argument("--no-plan", action="store_true",
                     help="Drop plan from the tool registry.")
+    ap.add_argument("--sandbox", choices=("process", "docker"), default=None,
+                    help="Isolation backend for run_python / run_shell. "
+                         "'process' (default) runs on the host; 'docker' "
+                         "confines each call to a network-less, read-only "
+                         "container. Falls back to the BANNA_SANDBOX env var.")
     ap.add_argument("--skills", action="store_true",
                     help="Enable skill-library injection + harvest. Off by default.")
 
@@ -704,6 +713,7 @@ def main(argv: list[str] | None = None) -> int:
         budget_cost_usd=args.budget_cost,
         no_shell=args.no_shell,
         no_plan=args.no_plan,
+        sandbox=args.sandbox,
         skills_enabled=args.skills,
     )
     if dotenv_path is not None:

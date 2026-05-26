@@ -90,7 +90,7 @@ The `react` loop ships with five structural choices that meaningfully change beh
 - **No held-out test split.** GAIA's official test split is private; we report on the public validation set only. The same set was used during engineering iteration, so this is engineering polish on a known eval, not a generalization claim against a held-out distribution. A run against a separate benchmark (e.g. BrowseComp) is queued.
 - **Single-agent loop.** This is not a multi-agent system. Tasks requiring delegation across specialist agents are out of scope.
 - **No video / image-reasoning tools.** A small number of GAIA tasks require video frame extraction or vision-grade image reasoning; those are structurally unreachable without additional tools.
-- **No OS-level sandboxing of tools.** `run_shell` is subject to a confirmation prompt and a denylist, but the tool family runs in the same OS process as the agent. Running this on untrusted user input is out of scope until container-based isolation lands.
+- **Tool isolation depends on the backend.** This run used the default `process` backend (host subprocess), gated by a confirmation prompt and a denylist. A `docker` backend (network-less, read-only container) is available via `--sandbox=docker` for untrusted input; it was not used for this evaluation, so the numbers reflect host execution.
 
 ## Why not wrap `react` with a verifier-retry loop?
 
@@ -104,7 +104,7 @@ A natural question — and one we measured. Two alternative policies were valida
 
 Both wrapping strategies regressed on this model. Mechanism: each elaboration consumes a slice of the model's reasoning capacity (extra LLM call, retry tick has to reconstruct context, false-positive retries discard correct answers). On `gpt-5-nano`, there isn't enough headroom for that overhead to pay off — the retry tick degrades the answer more often than it improves it. The reflexion variant is closer to neutral because it skips silently on questions with no extractable constraints, but still regresses on net.
 
-The plausible interpretation: published wrapping techniques (Reflexion, verifier-retry, planner-first agents) all benchmark on GPT-4-tier models where the capacity headroom absorbs the overhead. On a smaller model, the overhead dominates. A re-run of this ablation on a larger model (e.g. Sonnet) is queued; the prediction is that the ordering flips and extrinsic verification starts to pay.
+The plausible interpretation: each elaboration only pays off when the model has enough spare reasoning capacity to absorb its overhead (an extra LLM call, a retry tick that must reconstruct context, the risk of a false-positive retry discarding a correct answer). On `gpt-5-nano`, that headroom isn't there, so the overhead dominates and the wrapping regresses.
 
 ## Ongoing work
 
