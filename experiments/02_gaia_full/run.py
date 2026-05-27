@@ -127,6 +127,11 @@ def main() -> int:
                     help="Per-task max total tokens (default: unlimited).")
     ap.add_argument("--budget-cost", type=float, default=None,
                     help="Per-task max USD cost (default: unlimited).")
+    ap.add_argument("--max-total-cost", type=float, default=None,
+                    help="Hard cap on cumulative USD spend across ALL tasks. "
+                         "The run stops early once the running total reaches "
+                         "this (whole-run kill switch, separate from the "
+                         "per-task --budget-cost axis).")
     args = ap.parse_args()
 
     # ---- HTTP cache: set BEFORE building any tools that fetch ----
@@ -258,10 +263,13 @@ def main() -> int:
         )
     print(f"  tools      : {[t.name for t in tool_list]}")
     print(f"  out_dir    : {out_dir}\n")
+    if args.max_total_cost is not None:
+        print(f"  max_total  : ${args.max_total_cost:.2f} (whole-run cap)\n")
 
     run_gaia(tasks, llm=llm, tools=tools, policy=policy,
              out_dir=out_dir, verbose=True,
-             budget_factory=budget_factory)
+             budget_factory=budget_factory,
+             max_total_cost_usd=args.max_total_cost)
 
     # ---- Phase 1 report on the just-written results.jsonl ----
     report = aggregate([out_dir / "results.jsonl"])

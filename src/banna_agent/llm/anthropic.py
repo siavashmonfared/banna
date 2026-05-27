@@ -331,7 +331,29 @@ class AnthropicClient:
         if extra:
             kwargs.update(extra)
 
-        resp = client.messages.create(**kwargs)
+        try:
+            resp = client.messages.create(**kwargs)
+        except Exception as exc:  # noqa: BLE001 — re-classified below
+            from .base import ProviderError
+            # Rate limits (429) and transient server errors (5xx / 529
+            # "overloaded") are worth a backoff-and-retry; the driver
+            # owns that loop and pauses the wall clock while it waits, so
+            # a slow (low-tier) account doesn't burn the task's time
+            # budget. We surface them as a *retryable* ProviderError.
+            # Deterministic failures (bad request, auth) are not retried.
+            name = type(exc).__name__
+            status = getattr(exc, "status_code", None)
+            retryable = (
+                name in {"RateLimitError", "InternalServerError",
+                         "APIConnectionError", "APITimeoutError",
+                         "OverloadedError"}
+                or status in {408, 409, 429, 500, 502, 503, 504, 529}
+            )
+            if retryable:
+                raise ProviderError(
+                    f"{name}: {exc}", retryable=True,
+                ) from exc
+            raise
         reply = _anthropic_response_to_reply(resp, model_id)
         # Keep provider name in reply consistent with transport (anthropic / bedrock).
         if self.transport == "bedrock":

@@ -77,8 +77,17 @@ def test_non_retryable_provider_error_bails_after_one_step() -> None:
     assert not out.is_done
 
 
-def test_retryable_provider_error_does_not_bail() -> None:
-    """Transient retryable errors still produce THINK steps, loop continues."""
+def test_retryable_provider_error_is_retried_by_driver(monkeypatch) -> None:
+    """Transient retryable errors are retried by the driver with backoff.
+
+    The driver now owns the retry loop (the policy re-raises ProviderError
+    rather than swallowing it into a THINK). Two retryable failures then a
+    success → the loop commits, and the two failed proposes leave NO step
+    in the trace (they never reached an Observation).
+    """
+    slept: list[float] = []
+    monkeypatch.setattr("banna_agent.core.agent._time.sleep", slept.append)
+
     state = _fresh_state(max_steps=10)
     policy = ReActPolicy(model="gpt-5-nano")
     tools = ToolRegistry()
@@ -86,7 +95,35 @@ def test_retryable_provider_error_does_not_bail() -> None:
 
     out = run_policy(state, policy, llm=llm, tools=tools)
 
-    # Two THINK steps from the retryable errors, then the final answer.
-    assert llm.calls >= 3
-    # Loop should reach the FINAL_ANSWER, not exit early.
+    assert llm.calls == 3, "should retry twice then succeed"
     assert out.is_done, "retryable errors should not bail the loop"
+    # Backoff happened twice (2s, 4s) and was the driver's, not the policy's.
+    assert slept == [2.0, 4.0]
+    # The two transient failures produced no THINK steps — only the commit.
+    assert len(out.trace.steps) == 1
+    assert out.trace.steps[0].action.kind.value == "final_answer"
+
+
+def test_retryable_backoff_not_charged_to_wall(monkeypatch) -> None:
+    """Backoff waits must not count against the task wall budget.
+
+    A low-tier (rate-limited) account shouldn't fail tasks it would solve;
+    the tracker pauses the wall clock across the sleep.
+    """
+    # Make the "sleep" advance real time so that, if it WERE counted, the
+    # wall budget (tiny) would trip. Capture the real sleep BEFORE patching
+    # (the driver's _time is the time module, so patching it in place would
+    # otherwise make our shim call itself).
+    import time as _t
+    _real_sleep = _t.sleep
+    monkeypatch.setattr("banna_agent.core.agent._time.sleep",
+                        lambda s: _real_sleep(0.05))
+
+    state = _fresh_state(max_steps=10)
+    state.budget.max_wall_s = 1.0  # generous vs. two 0.05s paused sleeps
+    policy = ReActPolicy(model="gpt-5-nano")
+    out = run_policy(state, policy, llm=_RetryableLLM(), tools=ToolRegistry())
+
+    assert out.is_done
+    # Paused time excluded → elapsed wall stays well under the cap.
+    assert state.budget.elapsed_wall_s < 1.0

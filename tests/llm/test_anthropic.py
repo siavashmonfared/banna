@@ -390,3 +390,66 @@ def test_extra_kwargs_passed_through() -> None:
         extra={"metadata": {"user_id": "sina"}},
     )
     assert sdk.messages.last_kwargs["metadata"] == {"user_id": "sina"}
+
+
+# ---------------------------------------------------------------------------
+# Rate-limit / transient-error classification -> retryable ProviderError
+# ---------------------------------------------------------------------------
+
+
+class _RaisingMessages:
+    """A messages.create that raises a chosen exception."""
+
+    def __init__(self, exc: Exception) -> None:
+        self.exc = exc
+
+    def create(self, **_kwargs: Any) -> Any:
+        raise self.exc
+
+
+@dataclass
+class _RaisingSDK:
+    exc: Exception
+    messages: _RaisingMessages = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.messages = _RaisingMessages(self.exc)
+
+
+def _chat(sdk: Any) -> Any:
+    client = AnthropicClient(model="claude-sonnet-4-5-20250929", sdk=sdk)
+    return client.chat(
+        messages=[Message(role="user",
+                          content=[ContentBlock(kind="text", text="hi")])],
+    )
+
+
+def test_rate_limit_becomes_retryable_provider_error() -> None:
+    from banna_agent.llm.base import ProviderError
+
+    class RateLimitError(Exception):
+        pass
+
+    with pytest.raises(ProviderError) as ei:
+        _chat(_RaisingSDK(RateLimitError("429 slow down")))
+    assert ei.value.retryable is True
+
+
+def test_5xx_status_code_is_retryable() -> None:
+    from banna_agent.llm.base import ProviderError
+
+    class _Boom(Exception):
+        status_code = 503
+
+    with pytest.raises(ProviderError) as ei:
+        _chat(_RaisingSDK(_Boom("unavailable")))
+    assert ei.value.retryable is True
+
+
+def test_bad_request_is_not_swallowed_as_retryable() -> None:
+    # A deterministic 400 must propagate unchanged (not retried forever).
+    class _BadRequest(Exception):
+        status_code = 400
+
+    with pytest.raises(_BadRequest):
+        _chat(_RaisingSDK(_BadRequest("malformed")))

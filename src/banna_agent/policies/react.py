@@ -401,10 +401,23 @@ class ReActPolicy:
         thr = self.commit_pressure_threshold
         if not max_steps or thr <= 0 or thr > 1:
             return None
-        used = state.budget.steps_used
+        # Count *tool calls*, not just steps. A reply that emits several
+        # parallel tool calls is dispatched as a single TOOL_BATCH step,
+        # so a model can fire 2–3× as many tool calls as it has steps
+        # (the L3 search-loopers ran 24 searches across 12 steps). Keying
+        # the nudge on steps alone lets that volume slip under the
+        # threshold and never triggers the "commit now" pressure. Use the
+        # larger of (steps, tool-call count) so batching can't hide a loop.
+        n_calls = 0
+        for s in state.trace.steps:
+            if s.action.kind == ActionKind.TOOL_CALL:
+                n_calls += 1
+            elif s.action.kind == ActionKind.TOOL_BATCH:
+                n_calls += len((s.action.meta or {}).get("batch_calls") or [])
+        used = max(state.budget.steps_used, n_calls)
         if used / max_steps < thr:
             return None
-        remaining = max_steps - used
+        remaining = max(0, max_steps - used)
         text = (
             f"NOTE FROM THE RUNTIME: you've already used {used} of "
             f"{max_steps} step budget ({remaining} remaining). "
@@ -482,14 +495,19 @@ class ReActPolicy:
         try:
             reply = llm.chat(**kwargs)
         except Exception as exc:
-            # Non-retryable provider errors (missing API key, model can't
-            # do tool-calling) will repeat on the next tick — bail to the
-            # driver so the loop terminates instead of burning the step
-            # budget on a deterministic failure. Transient errors (rate
-            # limits, transport blips) still get the THINK fallback so
-            # they self-recover.
+            # Provider errors are handled by the driver, which owns the
+            # retry/backoff loop and pauses the wall clock while it waits:
+            #   - retryable (rate limit / transient 5xx) → driver retries
+            #     this same propose() with backoff off the task budget.
+            #   - non-retryable (missing API key, model can't tool-call) →
+            #     driver terminates instead of burning steps on a
+            #     deterministic failure.
+            # Either way we re-raise rather than swallowing into a THINK,
+            # so the .retryable hint isn't lost. Non-provider exceptions
+            # (e.g. a malformed reply we can't parse) still get the THINK
+            # fallback so a one-off blip self-recovers on the next tick.
             from ..llm.base import ProviderError
-            if isinstance(exc, ProviderError) and not exc.retryable:
+            if isinstance(exc, ProviderError):
                 raise
             return Action(
                 kind=ActionKind.THINK,

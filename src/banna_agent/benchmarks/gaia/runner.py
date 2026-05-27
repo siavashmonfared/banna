@@ -121,6 +121,7 @@ def run_gaia(
     out_dir: str | Path | None = None,
     verbose: bool = True,
     compactor: Any = None,
+    max_total_cost_usd: float | None = None,
 ) -> GAIARunResult:
     """Drive every task through `policy` and score exact-match.
 
@@ -134,6 +135,12 @@ def run_gaia(
                       and 120 s wall.
     out_dir         : optional directory to persist logs + summary
     verbose         : print per-task progress
+    max_total_cost_usd : optional hard cap on cumulative spend across all
+                      tasks. Checked before each task starts; once the
+                      running total reaches the cap the run stops early and
+                      returns whatever was scored so far. This is a
+                      whole-run kill switch, distinct from the per-task
+                      `Budget.max_cost_usd` axis.
     """
     if budget_factory is None:
         budget_factory = _default_budget
@@ -145,8 +152,17 @@ def run_gaia(
         results_path.write_text("")  # truncate per-run
 
     results: list[GAIATaskResult] = []
+    spent_usd = 0.0
 
     for i, task in enumerate(tasks, 1):
+        if max_total_cost_usd is not None and spent_usd >= max_total_cost_usd:
+            if verbose:
+                print(
+                    f"\n[stop] total-cost cap reached: "
+                    f"${spent_usd:.4f} >= ${max_total_cost_usd:.2f} after "
+                    f"{i - 1}/{len(tasks)} tasks — stopping early."
+                )
+            break
         t0 = time.monotonic()
         cache_baseline = _cache_stats_snapshot()
         log_path = None
@@ -227,6 +243,7 @@ def run_gaia(
             finished_reason=finished_reason,
         )
         results.append(tr)
+        spent_usd += tr.cost_usd
 
         if out is not None:
             with (out / "results.jsonl").open("a", encoding="utf-8") as f:
@@ -239,7 +256,7 @@ def run_gaia(
                 f"{task.task_id or '-':<10} "
                 f"pred={_truncate(pred, 40)!r:<42} "
                 f"gold={_truncate(task.answer, 40)!r} "
-                f"({tr.steps_used}st {wall:.1f}s)"
+                f"({tr.steps_used}st {wall:.1f}s ${spent_usd:.3f} total)"
             )
 
     agg = _aggregate(results)

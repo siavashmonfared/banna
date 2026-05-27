@@ -11,6 +11,7 @@ This is the level-1 loop described in the project plan. All policies
 """
 from __future__ import annotations
 
+import time as _time
 from typing import Any
 
 from ..llm.base import LLMClient
@@ -36,6 +37,11 @@ _GATED_TOOLS: dict[str, str] = {
     "run_shell": "exec",
 }
 
+# Max backoff-retries for a *retryable* provider error (rate limit /
+# transient 5xx) on a single propose() call. Waits are 2,4,8,16s (cap
+# 30) and are charged off the task wall budget (see the propose loop).
+_MAX_LLM_RETRIES: int = 4
+
 
 def _call_signature(tool_name: str, args: dict[str, Any]) -> str:
     """Stable hash for an (allow_always)-able call signature."""
@@ -46,6 +52,65 @@ def _call_signature(tool_name: str, args: dict[str, Any]) -> str:
     except Exception:
         canon = repr(sorted(args.items()) if isinstance(args, dict) else args)
     return f"{tool_name}:{hashlib.sha256(canon.encode()).hexdigest()[:16]}"
+
+
+# Tools that must ALWAYS execute, even on an identical repeat call:
+# side-effecting (run_shell / run_python / memory / plan), terminal
+# (final_answer / ask_user), or stateful — browser_* depend on the
+# current page, so the same args at different times mean different things.
+# Every other tool is a pure read of a stable resource within one task
+# run (search / read_url / read_file / pdf_* / xlsx_* / calculator), so a
+# byte-identical repeat returns the same thing. We skip those repeats and
+# nudge the model instead of re-paying the latency — this is the anti-loop
+# guard for the L3 search-loopers (24 searches across 2 unique queries).
+_NO_DEDUP_TOOLS: frozenset[str] = frozenset({
+    "run_shell", "run_python", "final_answer", "ask_user", "plan", "memory",
+    "browser_open", "browser_view", "browser_find", "browser_next",
+    "browser_click", "browser_back",
+})
+
+
+def _dup_lookup(state: AgentState, name: str, args: dict[str, Any]) -> str | None:
+    """Return a one-line preview of a prior identical call, or None.
+
+    None when the tool isn't dedup-eligible, the call is novel, or no
+    cache exists yet — i.e. "go ahead and execute".
+    """
+    if name in _NO_DEDUP_TOOLS:
+        return None
+    cache: dict[str, str] | None = getattr(state, "_call_cache", None)
+    if not cache:
+        return None
+    return cache.get(_call_signature(name, args))
+
+
+def _dup_record(state: AgentState, name: str, args: dict[str, Any],
+                preview: str) -> None:
+    """Remember an executed call so a later identical one is skipped."""
+    if name in _NO_DEDUP_TOOLS:
+        return
+    cache: dict[str, str] | None = getattr(state, "_call_cache", None)
+    if cache is None:
+        cache = {}
+        state._call_cache = cache  # type: ignore[attr-defined]
+    cache.setdefault(_call_signature(name, args), preview or "(no preview)")
+
+
+def _duplicate_observation(name: str, preview: str) -> "Observation":
+    """The synthetic, model-visible result for a skipped duplicate call."""
+    note = (
+        f"DUPLICATE CALL SKIPPED. You already called `{name}` with these "
+        f"exact arguments earlier in this task, so it was not run again. "
+        f"The previous result was: {preview or '(no preview)'}. "
+        f"Do not repeat it — use that result, call `{name}` with different "
+        f"arguments, or commit your answer with final_answer."
+    )
+    return Observation(
+        ok=True,
+        data={"duplicate_skipped": True, "note": note,
+              "previous_result": preview},
+        wall_s=0.0,
+    )
 
 
 def _brief_tool_result(result: Any, ok: bool) -> str:
@@ -159,10 +224,20 @@ def _execute(
                  kind=EventKind.TOOL_RESULT, ok=False, error=obs.error,
                  preview="")
             return obs
+        # Anti-loop: skip a byte-identical repeat of a dedup-eligible
+        # tool call and hand the model back its prior result instead.
+        dup = _dup_lookup(state, name, action.tool_args)
+        if dup is not None:
+            emit(log, run_id=state.trace.run_id, step=step_idx,
+                 kind=EventKind.TOOL_RESULT, ok=True,
+                 preview=f"duplicate-skipped ({dup})", duplicate_skipped=True)
+            return _duplicate_observation(name, dup)
         # Capture evidence count BEFORE the tool runs so the
         # auto-registration delta can be reported live.
         state._ev_before_tool = len(state.evidence)  # type: ignore[attr-defined]
         inv = invoke_tool(tool, action.tool_args)
+        _dup_record(state, name, action.tool_args,
+                    _brief_tool_result(inv.result, inv.ok))
         emit(
             log,
             run_id=state.trace.run_id,
@@ -442,7 +517,17 @@ def _execute_batch(
             )
             return {"name": name, "ok": False, "result": None,
                     "error": err, "wall_s": 0.0, "args": args}
+        # Anti-loop: same skip-and-nudge as the single-call path, applied
+        # per sub-call so a batch of repeated searches doesn't re-execute.
+        dup = _dup_lookup(state, name, args)
+        if dup is not None:
+            return {"name": name, "ok": True,
+                    "result": {"duplicate_skipped": True,
+                               "note": _duplicate_observation(name, dup).data["note"],
+                               "previous_result": dup},
+                    "error": None, "wall_s": 0.0, "args": args}
         inv = invoke_tool(tool, args)
+        _dup_record(state, name, args, _brief_tool_result(inv.result, inv.ok))
         return {"name": name, "ok": inv.ok, "result": inv.result,
                 "error": inv.error, "wall_s": inv.wall_s, "args": args}
 
@@ -608,19 +693,51 @@ def run_policy(
             emit(log, run_id=state.trace.run_id, step=len(state.trace.steps),
                  kind=EventKind.COMPACT, **info)
 
-        try:
-            action = policy.propose(state, llm=llm, tools=tools)
-        except Exception as exc:
-            # Mark provider errors so the CLI can show a tailored hint
-            # ("set the API key" / "pick a different model") instead of
-            # just dumping the exception type.
-            from ..llm.base import ProviderError
-            is_provider_err = isinstance(exc, ProviderError)
-            emit(log, run_id=state.trace.run_id, step=len(state.trace.steps),
-                 kind=EventKind.ERROR, error=f"{type(exc).__name__}: {exc}",
-                 where="policy.propose",
-                 provider_error=is_provider_err,
-                 retryable=getattr(exc, "retryable", None) if is_provider_err else None)
+        # Propose, retrying transient provider errors (rate limits, 5xx)
+        # with exponential backoff. The backoff sleep is wrapped in
+        # tracker.pause()/resume() so it does NOT count against the task's
+        # wall budget — a low-tier (rate-limited) account shouldn't fail
+        # tasks it would otherwise solve just because it had to wait. A
+        # non-retryable error (bad key, model can't tool-call) or an
+        # exhausted retry budget terminates the run as before.
+        from ..llm.base import ProviderError
+        action = None
+        retry_n = 0
+        while True:
+            try:
+                action = policy.propose(state, llm=llm, tools=tools)
+                break
+            except ProviderError as exc:
+                if not exc.retryable or retry_n >= _MAX_LLM_RETRIES:
+                    emit(log, run_id=state.trace.run_id,
+                         step=len(state.trace.steps),
+                         kind=EventKind.ERROR,
+                         error=f"{type(exc).__name__}: {exc}",
+                         where="policy.propose",
+                         provider_error=True, retryable=exc.retryable)
+                    break
+                retry_n += 1
+                backoff_s = min(2.0 ** retry_n, 30.0)  # 2,4,8,16 → cap 30
+                emit(log, run_id=state.trace.run_id,
+                     step=len(state.trace.steps),
+                     kind=EventKind.ERROR, error=f"{type(exc).__name__}: {exc}",
+                     where="policy.propose.retry",
+                     provider_error=True, retryable=True,
+                     attempt=retry_n, backoff_s=backoff_s)
+                tracker.pause()
+                try:
+                    _time.sleep(backoff_s)
+                finally:
+                    tracker.resume()
+                continue
+            except Exception as exc:
+                emit(log, run_id=state.trace.run_id,
+                     step=len(state.trace.steps),
+                     kind=EventKind.ERROR, error=f"{type(exc).__name__}: {exc}",
+                     where="policy.propose",
+                     provider_error=False, retryable=None)
+                break
+        if action is None:
             break
 
         # Truncate action text/answer so the event log stays small but
