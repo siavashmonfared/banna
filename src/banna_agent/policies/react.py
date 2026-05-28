@@ -401,19 +401,31 @@ class ReActPolicy:
         thr = self.commit_pressure_threshold
         if not max_steps or thr <= 0 or thr > 1:
             return None
-        # Count *tool calls*, not just steps. A reply that emits several
-        # parallel tool calls is dispatched as a single TOOL_BATCH step,
-        # so a model can fire 2–3× as many tool calls as it has steps
-        # (the L3 search-loopers ran 24 searches across 12 steps). Keying
-        # the nudge on steps alone lets that volume slip under the
-        # threshold and never triggers the "commit now" pressure. Use the
-        # larger of (steps, tool-call count) so batching can't hide a loop.
+        # Count *productive tool calls*, not just steps. A reply that emits
+        # several parallel calls is one TOOL_BATCH step, so a model can fire
+        # 2–3× as many calls as steps (the L3 search-loopers ran 24 searches
+        # across 12 steps) — keying on steps alone lets that volume slip
+        # under the threshold. But we must NOT count duplicate-skipped calls:
+        # the dedup guard already returns those from cache without doing
+        # work, and counting them would fire "commit now" pressure on a loop
+        # the harness already neutralized — and, worse, cut off a model just
+        # as it pivots to a genuinely new tool. So: max(steps, distinct
+        # productive calls).
         n_calls = 0
         for s in state.trace.steps:
+            data = s.observation.data if isinstance(s.observation.data, dict) else {}
             if s.action.kind == ActionKind.TOOL_CALL:
-                n_calls += 1
+                if not data.get("duplicate_skipped"):
+                    n_calls += 1
             elif s.action.kind == ActionKind.TOOL_BATCH:
-                n_calls += len((s.action.meta or {}).get("batch_calls") or [])
+                batch = data.get("batch")
+                if batch:
+                    for sub in batch:
+                        res = sub.get("result") if isinstance(sub, dict) else None
+                        if not (isinstance(res, dict) and res.get("duplicate_skipped")):
+                            n_calls += 1
+                else:
+                    n_calls += len((s.action.meta or {}).get("batch_calls") or [])
         used = max(state.budget.steps_used, n_calls)
         if used / max_steps < thr:
             return None

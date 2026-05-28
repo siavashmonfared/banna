@@ -55,9 +55,12 @@ dev = [
 ]
 # Optional PDF-tables support. pypdf (core dep) handles text extraction;
 # pdfplumber adds table-structure parsing for GAIA tasks where the
-# answer lives in a PDF table. Install with `pip install ".[pdf]"`.
+# answer lives in a PDF table. pymupdf renders pages to images so a
+# scanned (text-less) page or a figure/chart can be read by the vision
+# model. Install with `pip install ".[pdf]"`.
 pdf = [
     "pdfplumber>=0.11",
+    "pymupdf>=1.24",
 ]
 
 [project.scripts]

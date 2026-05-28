@@ -89,11 +89,22 @@ class _ImageExtractor:
             img_bytes, media_type = _normalize_image_bytes(p, self.max_edge_px)
         except Exception as exc:
             return {"ok": False, "error": f"image preprocessing failed: {exc}"}
+        out = self.extract_bytes(img_bytes, media_type, question)
+        if out.get("ok"):
+            out["path"] = str(p)
+        return out
 
+    def extract_bytes(self, img_bytes: bytes, media_type: str,
+                      question: str) -> dict[str, Any]:
+        """Vision call on raw image bytes (already normalized/encoded by the
+        caller). Shared by `extract` and by the PDF page-image path so a
+        rasterized PDF page reuses the exact same cached vision plumbing."""
+        if not isinstance(question, str) or not question.strip():
+            return {"ok": False, "error": "'question' must be a non-empty string"}
         key = hashlib.sha256(question.encode() + b"\0" + img_bytes).hexdigest()
         if key in self.cache:
             return {"ok": True, "answer": self.cache[key], "cached": True,
-                    "path": str(p), "question": question}
+                    "question": question}
 
         b64 = base64.b64encode(img_bytes).decode()
         image_block_raw = {
@@ -124,7 +135,7 @@ class _ImageExtractor:
 
         self.cache[key] = text_out
         return {"ok": True, "answer": text_out, "cached": False,
-                "path": str(p), "question": question,
+                "question": question,
                 "media_type": media_type, "bytes_sent": len(img_bytes)}
 
 

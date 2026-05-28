@@ -203,7 +203,9 @@ def main() -> int:
         tool_list.extend(make_browser_tools())
     if not args.no_pdf_tools:
         from banna_agent.tools.pdf_reader import make_pdf_tools
-        tool_list.extend(make_pdf_tools())
+        # Pass the LLM so scanned/image PDF pages get a vision-OCR fallback
+        # and the pdf_read_page_visual tool is registered.
+        tool_list.extend(make_pdf_tools(llm))
     if not args.no_xlsx_tools:
         from banna_agent.tools.xlsx_reader import make_xlsx_tools
         tool_list.extend(make_xlsx_tools())
@@ -325,13 +327,20 @@ GAIA_SYSTEM_PROMPT = (
     "  question: 'List the ingredients…'   →  answer: 'flour, sugar, eggs'\n"
     "  question: 'What chess move…'        →  answer: 'Rd5'\n\n"
     "Process:\n"
-    "  • Use tools to gather evidence. After 2-4 tool calls you usually have "
-    "    what you need. Stop and commit.\n"
-    "  • When the question asks for a number you need to compute, use the "
-    "    calculator tool — don't estimate.\n"
-    "  • If you cannot determine the answer with the tools available, still "
-    "    pass a best-guess single-token answer to final_answer rather than "
-    "    refusing or explaining."
+    "  • Gather evidence efficiently — for a simple lookup, a few tool calls "
+    "    are usually enough, so don't over-search once you have the fact.\n"
+    "  • But READ THE SOURCES YOU FIND. When the relevant source is a "
+    "    document, open it and read the parts that matter before concluding: "
+    "    for a PDF (local path OR a URL), use pdf_open then pdf_find to locate "
+    "    the right page, pdf_read_page to read it, and pdf_read_page_visual to "
+    "    read a figure/chart/plot or a scanned page where the text isn't "
+    "    selectable. Do not answer 'unable to determine' about a document you "
+    "    located but did not actually open and read.\n"
+    "  • When the question needs a value you must compute or look up in data, "
+    "    use the calculator or run_python rather than estimating by hand.\n"
+    "  • Only after a genuine effort to read the located sources, if you still "
+    "    cannot determine the answer, pass your best single-token guess to "
+    "    final_answer rather than refusing or explaining."
 )
 
 

@@ -45,6 +45,26 @@ def read_url(url: str, *, max_chars: int = DEFAULT_MAX_CHARS,
     content_type = resp.headers.get("Content-Type", "").split(";")[0].strip()
     body = resp.text or ""
 
+    # PDF: don't dump raw %PDF bytes as "text" (useless to the model).
+    # The pdf_* tools accept an http(s) URL directly and extract real
+    # text/pages — point the model there instead.
+    raw = resp.content or b""
+    if "pdf" in content_type.lower() or raw.lstrip()[:5].startswith(b"%PDF"):
+        return {
+            "url": url,
+            "status": status,
+            "content_type": content_type or "application/pdf",
+            "title": "",
+            "text": (
+                "This URL is a PDF. read_url does not extract PDFs — call "
+                "`pdf_open`, `pdf_read_page`, or `pdf_find` with this same URL "
+                "to read its text/pages."
+            ),
+            "is_pdf": True,
+            "truncated": False,
+            "from_cache": resp.from_cache,
+        }
+
     # Detect HTML by Content-Type OR body sniff — some cached/proxied
     # responses arrive with an empty content-type but obviously-HTML body.
     is_html = "html" in content_type
