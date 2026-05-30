@@ -81,6 +81,29 @@ def _render(v) -> str:
     return '"' + str(v).replace('\\', '\\\\').replace('"', '\\"') + '"'
 
 
+def read_package_allowlist() -> dict[str, str]:
+    """Return the sandbox package allowlist (`import_name -> "dist==ver"`).
+
+    Backed by the `[packages]` section of `config.toml`; `{}` if unset.
+    """
+    pkgs = read_config().get("packages") or {}
+    return {k: v for k, v in pkgs.items() if isinstance(v, str)}
+
+
+def write_package_allowlist(entries: dict[str, str], *, replace: bool = False) -> Path:
+    """Persist allowlist `entries` into the `[packages]` section.
+
+    By default `entries` are merged into the existing allowlist; pass
+    `replace=True` to overwrite it wholesale (used by `remove`). Other config
+    sections (e.g. `[default]`) are preserved.
+    """
+    data = read_config()
+    pkgs = {} if replace else dict(data.get("packages") or {})
+    pkgs.update(entries)
+    data["packages"] = pkgs
+    return write_config(data)
+
+
 def read_env() -> dict[str, str]:
     """Parse `~/.config/banna/.env` into a `{KEY: VALUE}` dict."""
     p = env_path()

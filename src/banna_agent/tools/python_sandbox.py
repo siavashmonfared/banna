@@ -17,12 +17,14 @@ is needed.
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from .base import JsonTool
+from .package_policy import PackagePolicy
 from .sandbox import (
     DEFAULT_MAX_OUTPUT_CHARS,
     DEFAULT_TIMEOUT_S,
+    DockerBackend,
     SandboxBackend,
     resolve_sandbox_backend,
 )
@@ -82,10 +84,34 @@ PYTHON_SANDBOX_SCHEMA: dict[str, Any] = {
 
 def make_python_sandbox_tool(
     sandbox: "str | SandboxBackend | None" = None,
+    *,
+    approve_install: "Callable[[str, str], bool] | None" = None,
+    package_policy: PackagePolicy | None = None,
+    base_image: str | None = None,
 ) -> JsonTool:
     """Build the run_python tool. `sandbox` selects the isolation backend
     ("process" / "docker" / a backend instance); None resolves from
-    BANNA_SANDBOX, defaulting to "process"."""
+    BANNA_SANDBOX, defaulting to "process".
+
+    When the resolved backend is a Docker backend, an optional on-demand
+    install policy can be attached: `package_policy` (the trusted allowlist),
+    `approve_install` (callback for non-allowlisted packages), and a custom
+    `base_image`. These are ignored for the process backend, so the default /
+    GAIA path (`make_python_sandbox_tool()`) is unchanged.
+    """
+    backend = resolve_sandbox_backend(sandbox)
+    if isinstance(backend, DockerBackend) and (
+        package_policy is not None or base_image
+    ):
+        backend = DockerBackend(
+            image=base_image or backend.image,
+            memory=backend.memory,
+            cpus=backend.cpus,
+            pids=backend.pids,
+            docker_bin=backend.docker_bin,
+            package_policy=package_policy,
+            on_unlisted=approve_install,
+        )
     return JsonTool(
         name="run_python",
         description=(
@@ -93,6 +119,6 @@ def make_python_sandbox_tool(
             "Returns stdout, stderr, returncode, and timeout flag."
         ),
         input_schema=PYTHON_SANDBOX_SCHEMA,
-        handler=_make_handler(sandbox),
+        handler=_make_handler(backend),
         capabilities=frozenset({"sandbox", "write", "compute"}),
     )

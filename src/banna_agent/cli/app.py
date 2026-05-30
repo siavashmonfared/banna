@@ -78,13 +78,13 @@ class MyAgentApp:
 
     provider: str = "openai"
     model: str | None = "gpt-5-nano"
-    policy_name: str = "react"
+    policy_name: str = "react+"
     temperature: float = 0.7
     n_candidates: int = 3
-    budget_steps: int = 10
-    budget_wall_s: float = 200.0
+    budget_steps: int = 15
+    budget_wall_s: float = 300.0
     budget_tokens: int | None = None
-    budget_cost_usd: float | None = None
+    budget_cost_usd: float | None = 5.0
 
     # Trace compaction — off by default; toggle with /compact.
     compact_enabled: bool = False
@@ -100,6 +100,9 @@ class MyAgentApp:
     # Isolation backend for run_python / run_shell: "process" (host) or
     # "docker" (network-less container). None resolves from BANNA_SANDBOX.
     sandbox: str | None = None
+    # Base image for --sandbox=docker (None → python:3.12-slim). On-demand
+    # installs are layered on top of this.
+    sandbox_image: str | None = None
     no_plan: bool = False
 
     console: Console = field(default_factory=_make_console)
@@ -110,6 +113,13 @@ class MyAgentApp:
     tools: ToolRegistry | None = None
     policy: Any = None
 
+    # Session-scoped trusted-package allowlist for the docker sandbox; built
+    # once on first docker rebuild so session approvals persist across /model
+    # etc. The active thinking-spinner, parked here so _approve_install can
+    # pause it around a blocking prompt.
+    _package_policy: Any = None
+    _active_status: Any = None
+
     # ------------------------------------------------------------------
     # build / rebuild
     # ------------------------------------------------------------------
@@ -118,12 +128,29 @@ class MyAgentApp:
         self.llm = make_client(self.provider, model=self.model)
 
     def rebuild_tools(self) -> None:
+        # On-demand package installs are only meaningful for the docker
+        # backend. Attach the allowlist + approval callback there; the process
+        # backend (default/GAIA) gets the plain factory call, unchanged.
+        py_extra: dict[str, Any] = {}
+        if self.sandbox == "docker":
+            if self._package_policy is None:
+                from ..tools.package_policy import PackagePolicy, default_allowlist
+                from .config_store import read_package_allowlist
+                # Built-in trusted defaults, with the user's config layered on
+                # top (so config can override or extend any default pin).
+                self._package_policy = PackagePolicy(
+                    allowlist={**default_allowlist(), **read_package_allowlist()})
+            py_extra = dict(
+                approve_install=self._approve_install,
+                package_policy=self._package_policy,
+                base_image=self.sandbox_image,
+            )
         tool_list = [
             make_search_tool(),
             make_url_reader_tool(),
             make_file_reader_tool(),
             make_calculator_tool(),
-            make_python_sandbox_tool(sandbox=self.sandbox),
+            make_python_sandbox_tool(sandbox=self.sandbox, **py_extra),
             make_list_files_tool(),
             make_grep_tool(),
         ]
@@ -174,42 +201,68 @@ class MyAgentApp:
             self.console.print("[red]denied[/red]")
         return ok
 
+    def _approve_install(self, import_name: str, pip_spec: str) -> bool:
+        """Ask whether to install a non-allowlisted package into the docker
+        sandbox image. Returns True to proceed (install for this session),
+        False to deny. Triggered from inside run_python when an import fails
+        and the package isn't on the allowlist; available under every policy.
+
+        [1] install once   [2] add to allowlist (persist)   [3] deny.
+        """
+        status = self._active_status
+        if status is not None:
+            try:
+                status.stop()
+            except Exception:
+                pass
+        try:
+            self.console.print()
+            self.console.print(
+                "[yellow]⚠ sandbox code needs a package not on the "
+                "allowlist[/yellow]"
+            )
+            self.console.print(
+                f"  import [bold]{import_name}[/bold]  →  "
+                f"pip install [bold]{pip_spec}[/bold]"
+            )
+            self.console.print(
+                "[1] install once   [2] add to allowlist (persist)   [3] deny"
+            )
+            try:
+                raw = input("> [1/2/3, default 3]: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                self.console.print("[red]denied[/red]")
+                return False
+            if raw == "1":
+                self.console.print("[green]installing for this session[/green]")
+                return True
+            if raw == "2":
+                from .config_store import write_package_allowlist
+                write_package_allowlist({import_name: pip_spec})
+                if self._package_policy is not None:
+                    self._package_policy.allowlist[import_name] = pip_spec
+                self.console.print("[green]added to allowlist[/green]")
+                return True
+            self.console.print("[red]denied[/red]")
+            return False
+        finally:
+            if status is not None:
+                try:
+                    status.start()
+                except Exception:
+                    pass
+
     def rebuild_policy(self) -> None:
         self.policy = self._build_policy()
 
     def _build_policy(self) -> Any:
-        # Imported lazily so the CLI starts fast even without these on path.
-        from ..policies.best_first_over_plans import BestFirstOverPlansPolicy
-        from ..policies.bfs_over_plans import BFSOverPlansPolicy
-        from ..policies.dfs_over_plans import DFSOverPlansPolicy
-        from ..policies.planner_react import PlannerReActPolicy
-        from ..policies.react import ReActPolicy
-        from ..policies.verifier_retry import VerifierRetryPolicy
-
+        # `react+` is the only policy exposed by the public CLI. It
+        # subclasses `ReActPolicy`, so the entire ReAct engine is
+        # inherited; the bare `react` module ships only as that parent.
         name = self.policy_name
-        if name == "react":
-            return ReActPolicy(model=self.model)
         if name == "react+":
             from ..policies.react_plus import ReActPlusPolicy
             return ReActPlusPolicy(model=self.model)
-        if name == "planner_react":
-            return PlannerReActPolicy(model=self.model)
-        if name == "bfs_over_plans":
-            return BFSOverPlansPolicy(model=self.model, n_candidates=self.n_candidates)
-        if name == "dfs_over_plans":
-            return DFSOverPlansPolicy(model=self.model, n_candidates=self.n_candidates)
-        if name == "best_first_over_plans":
-            return BestFirstOverPlansPolicy(model=self.model, n_candidates=self.n_candidates)
-        if name == "verifier_retry":
-            return VerifierRetryPolicy(inner=ReActPolicy(model=self.model))
-        if name == "best_of_n":
-            from ..policies.best_of_n import BestOfNPolicy
-            return BestOfNPolicy(
-                n=self.n_candidates,
-                selector="majority_vote",
-                inner=VerifierRetryPolicy(inner=ReActPolicy(model=self.model)),
-                judge_model=self.model,
-            )
         raise ValueError(f"unknown policy: {name}")
 
     # ------------------------------------------------------------------
@@ -288,6 +341,9 @@ class MyAgentApp:
         t0 = time.monotonic()
         err: str | None = None
         with self.console.status("[dim]thinking…[/dim]", spinner="dots") as status:
+            # Parked so _approve_install (called from inside run_python, under
+            # the spinner) can pause/restart it around its blocking prompt.
+            self._active_status = status
             log = StreamingEventLog(
                 console=self.console, status=status, state=state,
             )
@@ -307,6 +363,7 @@ class MyAgentApp:
                 err = "interrupted by user (Ctrl-C)"
             except Exception as exc:
                 err = f"{type(exc).__name__}: {exc}"
+        self._active_status = None
 
         # Prefer the budget's elapsed wall: it excludes time the loop sat
         # paused on an ask_user / permission prompt (see BudgetTracker.pause).
@@ -581,21 +638,21 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                     help="LLM provider to start with.")
     ap.add_argument("--model", default=os.environ.get("MYAGENT_MODEL", "gpt-5-nano"),
                     help="Override the provider's default model.")
-    ap.add_argument("--policy", default="react", choices=POLICY_NAMES,
+    ap.add_argument("--policy", default="react+", choices=POLICY_NAMES,
                     help="Policy to run.")
     ap.add_argument("--n-candidates", type=int, default=3,
                     help="N candidate plans (BFS/DFS/best-first).")
     ap.add_argument("--temperature", type=float, default=0.7,
                     help="LLM temperature (where applicable).")
 
-    ap.add_argument("--budget-steps", type=int, default=10,
+    ap.add_argument("--budget-steps", type=int, default=15,
                     help="Max steps per task.")
-    ap.add_argument("--budget-wall", type=float, default=200.0,
+    ap.add_argument("--budget-wall", type=float, default=300.0,
                     help="Max wall-seconds per task.")
     ap.add_argument("--budget-tokens", type=int, default=None,
                     help="Max total tokens per task (default: unlimited).")
-    ap.add_argument("--budget-cost", type=float, default=None,
-                    help="Max USD cost per task (default: unlimited).")
+    ap.add_argument("--budget-cost", type=float, default=5.0,
+                    help="Max USD cost per task (default: $5).")
 
     ap.add_argument("--no-shell", action="store_true",
                     help="Drop run_shell from the tool registry.")
@@ -606,6 +663,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                          "'process' (default) runs on the host; 'docker' "
                          "confines each call to a network-less, read-only "
                          "container. Falls back to the BANNA_SANDBOX env var.")
+    ap.add_argument("--sandbox-image",
+                    default=os.environ.get("BANNA_SANDBOX_IMAGE"),
+                    help="Base Docker image for --sandbox=docker "
+                         "(default python:3.12-slim). Packages installed on "
+                         "demand are layered on top. Falls back to the "
+                         "BANNA_SANDBOX_IMAGE env var.")
     ap.add_argument("--skills", action="store_true",
                     help="Enable skill-library injection + harvest. Off by default.")
 
@@ -714,6 +777,7 @@ def main(argv: list[str] | None = None) -> int:
         no_shell=args.no_shell,
         no_plan=args.no_plan,
         sandbox=args.sandbox,
+        sandbox_image=args.sandbox_image,
         skills_enabled=args.skills,
     )
     if dotenv_path is not None:

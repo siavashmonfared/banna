@@ -15,7 +15,9 @@ from .config_store import (
     env_path,
     read_config,
     read_env,
+    read_package_allowlist,
     write_config,
+    write_package_allowlist,
 )
 from .setup_wizard import _PROVIDER_KEY_VAR, _VALIDATORS, run_wizard
 
@@ -60,7 +62,16 @@ _CONFIG_USAGE = (
     "usage:\n"
     "  banna config get [key]         show the whole config, or a single key\n"
     "  banna config set <key> <value> set a key (e.g. `banna config set provider openai`)\n"
-    "  banna config path              print the config file path"
+    "  banna config path              print the config file path\n"
+    "  banna config packages ...      manage the docker-sandbox install allowlist"
+)
+
+_PACKAGES_USAGE = (
+    "usage:\n"
+    "  banna config packages list                       show the allowlist\n"
+    "  banna config packages add <import> <dist==ver>   allow a package\n"
+    "                                                   (e.g. `add cv2 opencv-python==4.10.0.84`)\n"
+    "  banna config packages remove <import>            remove a package"
 )
 
 
@@ -69,6 +80,9 @@ def _cmd_config(args: list[str]) -> int:
         print(_CONFIG_USAGE)
         return 0
     sub = args[0]
+
+    if sub == "packages":
+        return _cmd_config_packages(args[1:])
 
     if sub == "path":
         print(config_toml_path())
@@ -107,6 +121,56 @@ def _cmd_config(args: list[str]) -> int:
         return 0
 
     print(_CONFIG_USAGE, file=sys.stderr)
+    return 2
+
+
+def _cmd_config_packages(args: list[str]) -> int:
+    """`banna config packages {list,add,remove}` — docker-sandbox allowlist."""
+    verb = args[0] if args else "list"
+
+    if verb == "list":
+        from ..tools.package_policy import default_allowlist
+        defaults = default_allowlist()
+        user = read_package_allowlist()
+        print("built-in defaults (trusted, installed with no prompt):")
+        for name, spec in sorted(defaults.items()):
+            override = f"  → overridden: {user[name]}" if name in user else ""
+            print(f"  {name} = {spec}{override}")
+        extra = {k: v for k, v in user.items() if k not in defaults}
+        print("\nyour additions:")
+        if extra:
+            for name, spec in sorted(extra.items()):
+                print(f"  {name} = {spec}")
+        else:
+            print("  (none — `banna config packages add <import> <dist==ver>`)")
+        return 0
+
+    if verb == "add":
+        if len(args) < 3:
+            print("usage: banna config packages add <import_name> <dist==version>",
+                  file=sys.stderr)
+            return 2
+        import_name, spec = args[1], args[2]
+        path = write_package_allowlist({import_name: spec})
+        print(f"allowlisted {import_name} = {spec!r}  →  {path}")
+        return 0
+
+    if verb == "remove":
+        if len(args) < 2:
+            print("usage: banna config packages remove <import_name>",
+                  file=sys.stderr)
+            return 2
+        import_name = args[1]
+        pkgs = read_package_allowlist()
+        if import_name not in pkgs:
+            print(f"(not in allowlist: {import_name})", file=sys.stderr)
+            return 1
+        del pkgs[import_name]
+        write_package_allowlist(pkgs, replace=True)
+        print(f"removed {import_name}")
+        return 0
+
+    print(_PACKAGES_USAGE, file=sys.stderr)
     return 2
 
 

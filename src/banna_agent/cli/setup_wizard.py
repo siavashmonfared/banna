@@ -329,11 +329,8 @@ def run_wizard() -> WizardResult:
     config_path = write_config({"default": {
         "provider": provider,
         "model": model,
-        # Only `react` is exposed in the public CLI — wrapping policies
-        # (verifier_retry, planner_react, etc.) ship in src/ but are
-        # gated until each one's GAIA validation run lands. Writing any
-        # other name here would crash _build_policy at startup.
-        "policy": "react",
+        # `react+` is the only policy the public CLI exposes.
+        "policy": "react+",
     }})
     env_path = None
     if api_key:

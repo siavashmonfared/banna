@@ -22,13 +22,17 @@ a new branch in `resolve_sandbox_backend` — no caller changes.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import tempfile
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:
+    from .package_policy import PackagePolicy
 
 DEFAULT_TIMEOUT_S = 30.0
 DEFAULT_MAX_OUTPUT_CHARS = 20_000
@@ -38,6 +42,28 @@ DEFAULT_DOCKER_IMAGE = "python:3.12-slim"
 DEFAULT_DOCKER_MEMORY = "512m"
 DEFAULT_DOCKER_CPUS = "1.0"
 DEFAULT_DOCKER_PIDS = 256
+
+# Cap install/rebuild attempts within one run_python call so a script that
+# imports a new missing module on every line can't loop forever.
+MAX_INSTALL_RETRIES = 5
+
+# `ModuleNotFoundError: No module named 'foo'` / `'foo.bar'`.
+_MNFE_RE = re.compile(r"No module named ['\"]([\w][\w.]*)['\"]")
+
+
+def parse_missing_module(stderr: str) -> str | None:
+    """Return the top-level import name from a ModuleNotFoundError, else None.
+
+    `import a.b.c` reports `'a.b.c'` (or `'a.b'`); pip installs distributions,
+    so we collapse to the top-level package and let the allowlist map it to a
+    pip spec.
+    """
+    if not stderr:
+        return None
+    m = _MNFE_RE.search(stderr)
+    if not m:
+        return None
+    return m.group(1).split(".")[0]
 
 
 # ---------------------------------------------------------------------------
@@ -229,12 +255,26 @@ class DockerBackend(SandboxBackend):
         cpus: str = DEFAULT_DOCKER_CPUS,
         pids: int = DEFAULT_DOCKER_PIDS,
         docker_bin: str = "docker",
+        package_policy: "PackagePolicy | None" = None,
+        on_unlisted: "Callable[[str, str], bool] | None" = None,
+        build_timeout_s: float = 300.0,
     ) -> None:
         self.image = image
         self.memory = memory
         self.cpus = cpus
         self.pids = pids
         self.docker_bin = docker_bin
+        # On-demand install policy. When `package_policy is None`, run_python
+        # behaves exactly as a bare container run (the GAIA/default path).
+        self.package_policy = package_policy
+        self.on_unlisted = on_unlisted
+        self.build_timeout_s = build_timeout_s
+        # The base image stays fixed; `image` rolls forward to the latest
+        # derived tag as packages are installed this session. Builds always
+        # layer the full accumulated pin set onto the base, so the cache tag
+        # is deterministic for a given (base, pin set).
+        self._base_image = image
+        self._installed_pins: set[str] = set()
 
     def _base_argv(self, *, workspace: str | None, interactive: bool) -> list[str]:
         argv = [
@@ -288,14 +328,62 @@ class DockerBackend(SandboxBackend):
                 max_output_chars=max_output_chars, python_err_summary=False,
             )
 
-    def run_python(self, code, *, timeout_s=DEFAULT_TIMEOUT_S,
-                   max_output_chars=DEFAULT_MAX_OUTPUT_CHARS, workspace=None):
+    def _run_python_once(self, code, *, timeout_s, max_output_chars, workspace):
         # Feed the script over stdin (`python -`) so we never have to write
         # it onto the read-only rootfs.
         argv = self._base_argv(workspace=workspace, interactive=True)
         argv += [self.image, "python", "-"]
         return self._execute(argv, stdin=code, timeout_s=timeout_s,
                              max_output_chars=max_output_chars, python_err_summary=True)
+
+    def run_python(self, code, *, timeout_s=DEFAULT_TIMEOUT_S,
+                   max_output_chars=DEFAULT_MAX_OUTPUT_CHARS, workspace=None):
+        result = self._run_python_once(
+            code, timeout_s=timeout_s, max_output_chars=max_output_chars,
+            workspace=workspace)
+        # No install policy → behave exactly like a bare container run.
+        if self.package_policy is None:
+            return result
+
+        from .docker_images import build_derived_image
+
+        retries = 0
+        while not result["ok"] and retries < MAX_INSTALL_RETRIES:
+            missing = parse_missing_module(result.get("stderr", ""))
+            if missing is None:
+                return result
+
+            spec = self.package_policy.resolve(missing)
+            if spec is None:
+                # Not allowlisted. Ask a human if one is attached; otherwise
+                # (GAIA/batch, or a deny) surface the import error unchanged.
+                pip_spec = missing  # import name == pip name, unpinned (v1)
+                if self.on_unlisted is None or not self.on_unlisted(missing, pip_spec):
+                    return result
+                self.package_policy.approve_session(missing, pip_spec)
+                spec = pip_spec
+
+            # Phase 1: build a derived image (network ON, no model code) with
+            # the full accumulated pin set layered onto the base image.
+            self._installed_pins.add(spec)
+            ok, tag, log = build_derived_image(
+                self._base_image, sorted(self._installed_pins),
+                docker_bin=self.docker_bin, timeout_s=self.build_timeout_s,
+            )
+            if not ok:
+                self._installed_pins.discard(spec)
+                extra = f"\n[banna] package install failed for {spec!r}:\n{log}"
+                result["stderr"] = (result.get("stderr", "") + extra)[:max_output_chars]
+                return result
+
+            # Phase 2: re-run the untrusted code in the derived image, still
+            # `--network none`.
+            self.image = tag
+            retries += 1
+            result = self._run_python_once(
+                code, timeout_s=timeout_s, max_output_chars=max_output_chars,
+                workspace=workspace)
+        return result
 
     def run_shell(self, command, *, cwd=None, shell=True,
                   timeout_s=DEFAULT_TIMEOUT_S, max_output_chars=DEFAULT_MAX_OUTPUT_CHARS):
@@ -333,7 +421,8 @@ def resolve_sandbox_backend(
     if name in ("", "process", "host", "none"):
         return _PROCESS_SINGLETON
     if name == "docker":
-        return DockerBackend()
+        image = os.environ.get("BANNA_SANDBOX_IMAGE")
+        return DockerBackend(image=image) if image else DockerBackend()
     raise ValueError(
         f"unknown sandbox mode: {name!r} (expected 'process' or 'docker')"
     )

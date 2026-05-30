@@ -20,12 +20,11 @@ from .display import tools_table, turns_table
 
 # Per-policy human-readable knobs we accept for `/policy <name>`.
 #
-# Only validated policies are exposed via the CLI. Other policy
-# implementations ship in `banna_agent.policies` but are not selectable
-# from `--policy` / `/policy` until they have a benchmark run behind them.
-# Add a name here once its validation run lands in `docs/evals/`.
+# `react+` is the only policy the public CLI exposes. It subclasses the
+# bare ReAct loop (which ships as its parent class, not as a selectable
+# policy), adding the interactive `ask_user` affordance, a per-tool
+# permission gate, and error-scoping prompt guardrails.
 POLICY_NAMES = (
-    "react",
     "react+",
 )
 
@@ -425,20 +424,6 @@ def cmd_policy(app: Any, args: list[str]) -> bool:
     app.rebuild_policy()
 
     app.console.print(f"policy → [bold]{new}[/bold]")
-
-    # Multi-call policies make 3+ LLM calls per task (planner + per-subq
-    # execution + verifier feedback, etc.). On a slow local model the
-    # default 60s wall is too tight — first task often trips the budget
-    # before any subquestion finalizes. Heads-up only when the user's
-    # current budget is conspicuously low.
-    multi_call = {"planner_react", "bfs_over_plans", "dfs_over_plans",
-                  "best_first_over_plans", "verifier_retry"}
-    if new in multi_call and app.budget_wall_s < 240:
-        app.console.print(
-            f"[dim]heads up:[/dim] [bold]{new}[/bold] makes 3+ LLM calls per task. "
-            f"Current wall budget is [yellow]{app.budget_wall_s:.0f}s[/yellow]. "
-            f"Consider [bold]/budget wall=300[/bold] for local-model runs."
-        )
     return False
 
 
