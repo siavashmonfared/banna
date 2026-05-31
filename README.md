@@ -174,7 +174,7 @@ src/banna_agent/
 ├── llm/           provider-agnostic LLMClient + adapters (anthropic, openai, gemini, ollama, bedrock)
 ├── tools/         search, read_url, read_file, pdf/xlsx, python_sandbox,
 │                  calculator, run_shell, grep, list_files, plan, memory, final_answer
-├── policies/      react, react+ (and supporting research policies)
+├── policies/      react+ (the CLI policy) over the bare react engine
 ├── verifiers/     arithmetic, citation, coverage, format, command (+ base protocol)
 ├── benchmarks/    gaia/ (loader, runner, scorer, report)
 ├── memory/        in_memory_store, jsonl_store, skill_library, embeddings
@@ -187,7 +187,7 @@ Tests mirror `src/` under `tests/`. Run them with:
 pytest -q
 ```
 
-Current status on this branch: **818 passed, 3 skipped** (skips require the optional `chromadb` backend or real API keys).
+Current status on this branch: **790 passed, 3 skipped** (skips require the optional `chromadb` backend or real API keys).
 
 ## Limitations
 

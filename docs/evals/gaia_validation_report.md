@@ -108,4 +108,4 @@ The plausible interpretation: each elaboration only pays off when the model has 
 
 ## Ongoing work
 
-Further policies (planner-based decomposition, best-of-N selection) ship in `src/banna_agent/policies/` but are not exposed in the CLI. Each is one YAML config under `experiments/02_gaia_full/configs/ablation/`. Validated rows graduate into the CLI gate as they land.
+Further policies (planner-based decomposition, best-of-N selection, verifier-retry) are developed and validated in the private research repo; they are not part of this public tree, which ships only the bare `react` engine and its interactive `react+` subclass. Each validated row graduates into the public CLI as it lands, so the public surface stays to what has a benchmark run behind it.

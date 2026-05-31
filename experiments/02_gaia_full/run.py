@@ -82,9 +82,7 @@ def main() -> int:
     ap.add_argument("--model", default=None)
     ap.add_argument(
         "--policy",
-        choices=["react", "planner_react", "bfs_over_plans",
-                 "dfs_over_plans", "best_first_over_plans",
-                 "verifier_retry", "best_of_n"],
+        choices=["react", "react+"],
         default="react",
     )
     ap.add_argument("--n-candidates", type=int, default=3)
@@ -345,35 +343,17 @@ GAIA_SYSTEM_PROMPT = (
 
 
 def _build_policy(args):
-    from banna_agent.policies.best_first_over_plans import BestFirstOverPlansPolicy
-    from banna_agent.policies.bfs_over_plans import BFSOverPlansPolicy
-    from banna_agent.policies.dfs_over_plans import DFSOverPlansPolicy
-    from banna_agent.policies.planner_react import PlannerReActPolicy
+    # The public tree ships the bare ReAct engine (the benchmarked policy)
+    # and its react+ subclass. Research policies (planner / bfs / dfs /
+    # best-first / best-of-N / verifier-retry) live in the private repo
+    # and are reintroduced here as each one's validation row lands.
     from banna_agent.policies.react import ReActPolicy
-    from banna_agent.policies.verifier_retry import VerifierRetryPolicy
 
     if args.policy == "react":
         return ReActPolicy(model=args.model, system_prompt=GAIA_SYSTEM_PROMPT)
-    if args.policy == "planner_react":
-        return PlannerReActPolicy(model=args.model, executor_system=GAIA_SYSTEM_PROMPT)
-    if args.policy == "bfs_over_plans":
-        return BFSOverPlansPolicy(model=args.model, n_candidates=args.n_candidates)
-    if args.policy == "dfs_over_plans":
-        return DFSOverPlansPolicy(model=args.model, n_candidates=args.n_candidates)
-    if args.policy == "best_first_over_plans":
-        return BestFirstOverPlansPolicy(model=args.model, n_candidates=args.n_candidates)
-    if args.policy == "verifier_retry":
-        return VerifierRetryPolicy(inner=ReActPolicy(model=args.model, system_prompt=GAIA_SYSTEM_PROMPT))
-    if args.policy == "best_of_n":
-        from banna_agent.policies.best_of_n import BestOfNPolicy
-        return BestOfNPolicy(
-            n=args.n_trajectories,
-            selector=args.selector,
-            inner=VerifierRetryPolicy(
-                inner=ReActPolicy(model=args.model, system_prompt=GAIA_SYSTEM_PROMPT),
-            ),
-            judge_model=args.model,
-        )
+    if args.policy == "react+":
+        from banna_agent.policies.react_plus import ReActPlusPolicy
+        return ReActPlusPolicy(model=args.model, system_prompt=GAIA_SYSTEM_PROMPT)
     raise ValueError(f"unknown policy: {args.policy}")
 
 
