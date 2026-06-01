@@ -1,1 +1,1 @@
-"""Policies over AgentState: react, verifier_retry, best_first."""
+"""Policies over AgentState: react (engine) and react+ (the CLI policy)."""

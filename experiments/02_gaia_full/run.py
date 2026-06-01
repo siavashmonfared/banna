@@ -17,9 +17,7 @@ After the run, the script prints the resume table by calling
 
 Flags:
     --provider / --model        — same as experiment 01.
-    --policy                    — react | planner_react | bfs_over_plans |
-                                  dfs_over_plans | best_first_over_plans |
-                                  verifier_retry | best_of_n
+    --policy                    — react | react+
     --level / --n               — GAIA level + max tasks.
     --dataset / --jsonl         — gaia (HF) or jsonl with --jsonl path.
     --out-dir                   — defaults to runs/<ts>_<policy>_L<level>.
@@ -85,13 +83,6 @@ def main() -> int:
         choices=["react", "react+"],
         default="react",
     )
-    ap.add_argument("--n-candidates", type=int, default=3)
-    ap.add_argument("--n-trajectories", type=int, default=3,
-                    help="Number of independent trajectories for --policy best_of_n.")
-    ap.add_argument("--selector", default="majority_vote",
-                    choices=["majority_vote", "llm_judge"],
-                    help="Best-of-N selector. majority_vote is free; "
-                         "llm_judge adds one short LLM call per task.")
     ap.add_argument("--level", type=int, default=1,
                     help="GAIA level (1/2/3). Ignored when --all-levels is set.")
     ap.add_argument("--all-levels", action="store_true",

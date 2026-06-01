@@ -38,12 +38,7 @@ from banna_agent.llm.registry import make_client  # noqa: E402
 from banna_agent.memory.embeddings import HashEmbedder  # noqa: E402
 from banna_agent.memory.in_memory_store import InMemoryStore  # noqa: E402
 from banna_agent.memory.jsonl_store import JSONLStore  # noqa: E402
-from banna_agent.policies.best_first_over_plans import BestFirstOverPlansPolicy  # noqa: E402
-from banna_agent.policies.bfs_over_plans import BFSOverPlansPolicy  # noqa: E402
-from banna_agent.policies.dfs_over_plans import DFSOverPlansPolicy  # noqa: E402
-from banna_agent.policies.planner_react import PlannerReActPolicy  # noqa: E402
 from banna_agent.policies.react import ReActPolicy  # noqa: E402
-from banna_agent.policies.verifier_retry import VerifierRetryPolicy  # noqa: E402
 from banna_agent.tools.base import ToolRegistry  # noqa: E402
 from banna_agent.tools.calculator import make_calculator_tool  # noqa: E402
 from banna_agent.tools.file_reader import make_file_reader_tool  # noqa: E402
@@ -63,14 +58,10 @@ def main() -> int:
     ap.add_argument("--model", default=None)
     ap.add_argument(
         "--policy",
-        choices=["react", "planner_react", "bfs_over_plans",
-                 "dfs_over_plans", "best_first_over_plans",
-                 "verifier_retry"],
+        choices=["react", "react+"],
         default="react",
         help="Which Policy to run.",
     )
-    ap.add_argument("--n-candidates", type=int, default=3,
-                    help="N candidate plans for BFS/DFS/best-first.")
     ap.add_argument("--level", type=int, default=1)
     ap.add_argument("--n", type=int, default=None)
     ap.add_argument("--dataset", choices=["gaia", "jsonl"], default="gaia")
@@ -185,16 +176,9 @@ def main() -> int:
 def _build_policy(args):
     if args.policy == "react":
         return ReActPolicy(model=args.model)
-    if args.policy == "planner_react":
-        return PlannerReActPolicy(model=args.model)
-    if args.policy == "bfs_over_plans":
-        return BFSOverPlansPolicy(model=args.model, n_candidates=args.n_candidates)
-    if args.policy == "dfs_over_plans":
-        return DFSOverPlansPolicy(model=args.model, n_candidates=args.n_candidates)
-    if args.policy == "best_first_over_plans":
-        return BestFirstOverPlansPolicy(model=args.model, n_candidates=args.n_candidates)
-    if args.policy == "verifier_retry":
-        return VerifierRetryPolicy(inner=ReActPolicy(model=args.model))
+    if args.policy == "react+":
+        from banna_agent.policies.react_plus import ReActPlusPolicy
+        return ReActPlusPolicy(model=args.model)
     raise ValueError(f"unknown policy: {args.policy}")
 
 
