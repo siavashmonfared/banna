@@ -820,6 +820,19 @@ def main(argv: list[str] | None = None) -> int:
         else cfg_default.get("model", args.model)
     policy_name = args.policy if _flag_present("--policy") \
         else cfg_default.get("policy", args.policy)
+    # A saved config may name a policy this build no longer exposes (e.g. an
+    # older `policy = "react"` from before react+ became the sole CLI
+    # policy). Don't crash on a stale default — fall back to the argparse
+    # default and tell the user, so the REPL still starts.
+    if policy_name not in POLICY_NAMES:
+        fallback = args.policy if args.policy in POLICY_NAMES else POLICY_NAMES[0]
+        print(
+            f"note: configured policy {policy_name!r} is not available in "
+            f"this build; using {fallback!r}. "
+            f"Set a new default with `banna config set policy {fallback}`.",
+            file=sys.stderr,
+        )
+        policy_name = fallback
 
     app = MyAgentApp(
         provider=provider,

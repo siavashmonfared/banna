@@ -229,7 +229,7 @@ Tests mirror `src/` under `tests/`. Run them with:
 pytest -q
 ```
 
-Current status on this branch: **821 passed, 3 skipped** (skips require the optional `chromadb` backend or real API keys).
+Current status on this branch: **823 passed, 3 skipped** (skips require the optional `chromadb` backend or real API keys).
 
 ## Limitations
 
