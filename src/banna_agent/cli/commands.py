@@ -244,6 +244,8 @@ Slash commands
   /show <topic>                  trace | last | transcript | evidence | claims | traj | fields
   /save <path>                   write transcript to JSONL
   /load <path>                   load transcript from JSONL (replaces current)
+  /sessions                      list auto-saved sessions you can resume
+  /resume [id|last]              resume a saved session (picker if no id)
   /exit, /quit                   leave the REPL  (Ctrl-D also works)
 
 Anything else is sent as a question to the agent.
@@ -1035,6 +1037,73 @@ def cmd_load(app: Any, args: list[str]) -> bool:
     return False
 
 
+def cmd_sessions(app: Any, args: list[str]) -> bool:
+    """List auto-saved sessions you can resume.
+
+    Usage:
+      /sessions          show recent resumable sessions
+    """
+    from .sessions import list_sessions
+    infos = list_sessions(limit=20)
+    if not infos:
+        app.console.print("[dim]no saved sessions yet[/dim]")
+        return False
+    app.console.print("[bold]resumable sessions[/bold] [dim](most recent first)[/dim]")
+    for info in infos:
+        app.console.print(
+            f"  [bold]{info.id}[/bold]  [dim]({info.n_turns} turn(s))[/dim]  "
+            f"{info.first_question[:64]}")
+    app.console.print("[dim]resume with[/dim] /resume <id> [dim]or[/dim] /resume last")
+    return False
+
+
+def cmd_resume(app: Any, args: list[str]) -> bool:
+    """Replace the current transcript with a saved session.
+
+    Usage:
+      /resume            pick from recent sessions
+      /resume last       resume the most recent session
+      /resume <id>       resume a specific session
+    """
+    from .sessions import latest_session, list_sessions, load_session
+    target: str | None = None
+    if not args:
+        infos = list_sessions(limit=15)
+        if not infos:
+            app.console.print("[dim]no saved sessions to resume[/dim]")
+            return False
+        for n, info in enumerate(infos, 1):
+            app.console.print(
+                f"  [bold]{n}[/bold]. {info.id}  [dim]({info.n_turns} turn(s))[/dim]  "
+                f"{info.first_question[:60]}")
+        new = _ask_value(app, label="resume which (number)", current="",
+                         parser=str)
+        if not new:
+            return False
+        try:
+            target = infos[int(new) - 1].id
+        except (ValueError, IndexError):
+            app.console.print("[red]invalid choice[/red]")
+            return False
+    elif args[0] == "last":
+        info = latest_session()
+        if info is None:
+            app.console.print("[dim]no saved sessions to resume[/dim]")
+            return False
+        target = info.id
+    else:
+        target = args[0]
+    try:
+        app.session = load_session(target)
+    except FileNotFoundError as exc:
+        app.console.print(f"[red]{exc}[/red]")
+        return False
+    app.console.print(
+        f"[green]resumed[/green] {len(app.session.turns)} turn(s) "
+        f"from [bold]{target}[/bold]")
+    return False
+
+
 # ---------------------------------------------------------------------------
 # /show
 # ---------------------------------------------------------------------------
@@ -1220,6 +1289,8 @@ COMMANDS: dict[str, Callable[[Any, list[str]], bool]] = {
     "memory": cmd_memory,
     "save": cmd_save,
     "load": cmd_load,
+    "sessions": cmd_sessions,
+    "resume": cmd_resume,
     "show": cmd_show,
     "exit": cmd_exit,
     "quit": cmd_exit,

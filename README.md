@@ -71,6 +71,46 @@ banna providers                  # list configured providers and status
 banna providers --validate       # make a 1-token test call against each
 ```
 
+## MCP servers
+
+Use tools served by an external [MCP](https://modelcontextprotocol.io) server as if they were native tools. Both stdio (local subprocess) and HTTP/SSE (remote) transports are supported.
+
+```bash
+# register a local stdio server (its tools appear namespaced, e.g. collab.collab_start)
+banna config mcp add collab -- python3 /path/to/server.py
+# register a remote HTTP server
+banna config mcp add remote --http https://example.com/mcp
+banna config mcp list            # show configured servers
+banna config mcp remove collab   # drop one
+```
+
+Servers connect when the REPL starts and shut down on exit; a server that fails to start is reported and skipped rather than crashing the session. MCP tools run external code, so they go through the same per-call permission prompt as `run_shell`.
+
+## Sessions & resume
+
+Every conversation is auto-saved to `~/.config/banna/sessions/` as it happens, so you can pick up where you left off.
+
+```bash
+banna --resume          # pick from a list of recent sessions
+banna --resume last     # resume the most recent
+banna --resume <id>     # resume a specific session
+```
+
+Inside the REPL, `/sessions` lists them and `/resume [id|last]` switches. The explicit `/save <path>` and `/load <path>` still work for hand-managed transcripts.
+
+## Memory
+
+A persistent memory store (`~/.config/myagent/memory.jsonl`) survives across sessions. The agent can write and search it via the `memory` tool, and relevant entries are **auto-recalled** into context on each turn (gated by topical overlap so unrelated facts don't leak in).
+
+## Trace viewer
+
+Turn any run's JSONL event log into a self-contained HTML report — every step's reasoning, tool calls and results, parallel batches, and the final answer, in one file with no external assets.
+
+```bash
+banna trace view runs/<id>/logs/<task>.jsonl        # writes <task>.html
+banna trace view <log.jsonl> -o report.html         # custom output path
+```
+
 ## Policies
 
 A `Policy` implements a single method, `propose(state, llm, tools) → Action`; the driver is agnostic to which strategy is running. Two policies are available from the CLI via `--policy` / `/policy`:
@@ -174,11 +214,13 @@ src/banna_agent/
 ├── llm/           provider-agnostic LLMClient + adapters (anthropic, openai, gemini, ollama, bedrock)
 ├── tools/         search, read_url, read_file, pdf/xlsx, python_sandbox,
 │                  calculator, run_shell, grep, list_files, plan, memory, final_answer
+│   └── mcp/       MCP client (stdio + HTTP/SSE) + JsonTool bridge
 ├── policies/      react+ (the CLI policy) over the bare react engine
 ├── verifiers/     arithmetic, citation, coverage, format, command (+ base protocol)
 ├── benchmarks/    gaia/ (loader, runner, scorer, report)
 ├── memory/        in_memory_store, jsonl_store, skill_library, embeddings
-└── cli/           Rich-based REPL: /policy /budget /show /skills /compact /save /load …
+├── trace/         render a run's JSONL event log to static HTML
+└── cli/           Rich-based REPL: /policy /budget /show /sessions /resume /save /load …
 ```
 
 Tests mirror `src/` under `tests/`. Run them with:
@@ -187,7 +229,7 @@ Tests mirror `src/` under `tests/`. Run them with:
 pytest -q
 ```
 
-Current status on this branch: **790 passed, 3 skipped** (skips require the optional `chromadb` backend or real API keys).
+Current status on this branch: **821 passed, 3 skipped** (skips require the optional `chromadb` backend or real API keys).
 
 ## Limitations
 

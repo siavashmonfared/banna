@@ -136,20 +136,71 @@ class Session:
             out = "Recent conversation (truncated):\n" + out
         return out
 
+    def recall_preamble(
+        self,
+        user_text: str,
+        *,
+        k: int = 3,
+        min_confidence: float = 0.0,
+        min_score: float = 0.05,
+        max_chars: int = 800,
+    ) -> str:
+        """Semantic-search persistent memory against `user_text` and render
+        the top hits as a context block.
+
+        This is the *automatic* recall path: relevant facts surface even
+        when the model doesn't think to call the `memory` tool itself. The
+        model-driven `op=search` tool still exists for deliberate lookups;
+        this just primes the turn. Returns "" when nothing clears
+        `min_score` (so unrelated questions aren't polluted with noise).
+        """
+        store = self.memory_store
+        if store is None or not user_text.strip():
+            return ""
+        try:
+            from ..memory.base import MemoryQuery
+            hits = store.search(MemoryQuery(
+                query=user_text, k=k, min_confidence=min_confidence))
+        except Exception:
+            return ""
+        # The default HashEmbedder gives noisy cosine scores (hash
+        # collisions float unrelated entries above an absolute floor), so
+        # the score alone can't separate relevant from irrelevant. Gate on
+        # *lexical overlap* too: a hit must share a meaningful word with the
+        # query. That kills collision false-positives while keeping genuine
+        # topical matches.
+        q_words = _content_words(user_text)
+        kept = [
+            (e, s) for e, s in hits
+            if s >= min_score and (q_words & _content_words(e.content))
+        ]
+        if not kept:
+            return ""
+        lines = ["Relevant from memory (you stored these earlier):"]
+        for entry, _score in kept:
+            lines.append(f"  • {_truncate(entry.content, 200)}")
+        out = "\n".join(lines)
+        return out[:max_chars]
+
     def compose_question(
         self,
         user_text: str,
         *,
         skill_header: str = "",
+        auto_recall: bool = True,
     ) -> str:
-        """Wrap the user's text with the recent-conversation preamble + optional skill header."""
+        """Wrap the user's text with the recent-conversation preamble,
+        an optional auto-recalled memory block, and an optional skill header."""
         parts: list[str] = []
         preamble = self.format_preamble()
         if preamble:
             parts.append(preamble)
+        recall = self.recall_preamble(user_text) if auto_recall else ""
+        if recall:
+            parts.append(recall)
         if skill_header:
             parts.append(skill_header)
-        if preamble or skill_header:
+        if parts:
             parts.append(f"New question: {user_text}")
         else:
             parts.append(user_text)
@@ -211,3 +262,22 @@ class Session:
 def _truncate(s: str, n: int) -> str:
     s = (s or "").replace("\n", " ").strip()
     return s if len(s) <= n else s[: n - 1] + "…"
+
+
+# Words too common to signal topical overlap for the auto-recall gate.
+_STOPWORDS = frozenset(
+    "the a an and or but of to in on at for with by from as is are was were be "
+    "been being do does did this that these those i you he she it we they my your "
+    "what which who whom how when where why should would could can will use using "
+    "about into over under than then them his her its our their me him us".split()
+)
+
+
+def _content_words(text: str) -> set[str]:
+    """Lowercase alphanumeric words of length ≥3, minus stopwords. Used to
+    require lexical overlap before auto-recalling a memory entry."""
+    import re
+    return {
+        w for w in re.findall(r"[a-z0-9]+", (text or "").lower())
+        if len(w) >= 3 and w not in _STOPWORDS
+    }

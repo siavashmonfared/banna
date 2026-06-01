@@ -37,6 +37,17 @@ _GATED_TOOLS: dict[str, str] = {
     "run_shell": "exec",
 }
 
+
+def register_gated_tool(name: str, risk: str = "exec") -> None:
+    """Mark a (dynamically added) tool as permission-gated.
+
+    Built-ins like `run_shell` are gated by the static table above. Tools
+    discovered at runtime — notably MCP server tools, which execute
+    external code over a network — register here so the same per-call
+    permission prompt applies to them. Idempotent.
+    """
+    _GATED_TOOLS[name] = risk
+
 # Max backoff-retries for a *retryable* provider error (rate limit /
 # transient 5xx) on a single propose() call. Waits are 2,4,8,16s (cap
 # 30) and are charged off the task wall budget (see the propose loop).

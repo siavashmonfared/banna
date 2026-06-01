@@ -22,7 +22,7 @@ from .config_store import (
 from .setup_wizard import _PROVIDER_KEY_VAR, _VALIDATORS, run_wizard
 
 
-SUBCOMMANDS = ("init", "config", "providers")
+SUBCOMMANDS = ("init", "config", "providers", "trace")
 
 
 def is_subcommand(argv: Sequence[str]) -> bool:
@@ -38,8 +38,48 @@ def dispatch(argv: Sequence[str]) -> int:
         return _cmd_config(rest)
     if name == "providers":
         return _cmd_providers(rest)
+    if name == "trace":
+        return _cmd_trace(rest)
     print(f"unknown subcommand: {name}", file=sys.stderr)
     return 2
+
+
+# ---------------------------------------------------------------------------
+# trace — render a run's JSONL event log to static HTML
+# ---------------------------------------------------------------------------
+
+
+_TRACE_USAGE = (
+    "usage:\n"
+    "  banna trace view <log.jsonl> [-o out.html]   render a run log to HTML\n"
+    "       (default output: the log path with a .html suffix)"
+)
+
+
+def _cmd_trace(args: list[str]) -> int:
+    if not args or args[0] != "view":
+        print(_TRACE_USAGE, file=sys.stderr)
+        return 2
+    rest = args[1:]
+    out_path = None
+    if "-o" in rest:
+        i = rest.index("-o")
+        if i + 1 >= len(rest):
+            print("usage: banna trace view <log.jsonl> -o <out.html>", file=sys.stderr)
+            return 2
+        out_path = rest[i + 1]
+        rest = rest[:i] + rest[i + 2:]
+    if not rest:
+        print(_TRACE_USAGE, file=sys.stderr)
+        return 2
+    from ..trace import render_file
+    try:
+        dst = render_file(rest[0], out_path)
+    except FileNotFoundError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"wrote {dst}")
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -63,7 +103,17 @@ _CONFIG_USAGE = (
     "  banna config get [key]         show the whole config, or a single key\n"
     "  banna config set <key> <value> set a key (e.g. `banna config set provider openai`)\n"
     "  banna config path              print the config file path\n"
-    "  banna config packages ...      manage the docker-sandbox install allowlist"
+    "  banna config packages ...      manage the docker-sandbox install allowlist\n"
+    "  banna config mcp ...           manage MCP servers"
+)
+
+_MCP_USAGE = (
+    "usage:\n"
+    "  banna config mcp list                          show configured MCP servers\n"
+    "  banna config mcp add <name> -- <cmd> [args…]   add a stdio server\n"
+    "       (e.g. `banna config mcp add collab -- python3 /path/to/server.py`)\n"
+    "  banna config mcp add <name> --http <url>       add an HTTP server\n"
+    "  banna config mcp remove <name>                 remove a server"
 )
 
 _PACKAGES_USAGE = (
@@ -83,6 +133,9 @@ def _cmd_config(args: list[str]) -> int:
 
     if sub == "packages":
         return _cmd_config_packages(args[1:])
+
+    if sub == "mcp":
+        return _cmd_config_mcp(args[1:])
 
     if sub == "path":
         print(config_toml_path())
@@ -171,6 +224,78 @@ def _cmd_config_packages(args: list[str]) -> int:
         return 0
 
     print(_PACKAGES_USAGE, file=sys.stderr)
+    return 2
+
+
+def _cmd_config_mcp(args: list[str]) -> int:
+    """`banna config mcp {list,add,remove}` — manage MCP servers."""
+    from .mcp_config import (
+        add_http_server,
+        add_stdio_server,
+        mcp_config_path,
+        read_mcp_servers,
+        remove_server,
+    )
+
+    verb = args[0] if args else "list"
+
+    if verb == "list":
+        servers = read_mcp_servers()
+        if not servers:
+            print("(no MCP servers — `banna config mcp add <name> -- <cmd> [args…]`)")
+            return 0
+        for name, entry in sorted(servers.items()):
+            transport = entry.get("transport", "stdio")
+            if transport == "stdio":
+                cmd = " ".join([entry.get("command", ""), *entry.get("args", [])])
+                print(f"  {name}  [stdio]  {cmd}")
+            else:
+                print(f"  {name}  [http]   {entry.get('url', '')}")
+        print(f"\nconfig: {mcp_config_path()}")
+        return 0
+
+    if verb == "add":
+        # stdio:  add <name> -- <cmd> [args…]
+        # http:   add <name> --http <url>
+        if len(args) < 2:
+            print(_MCP_USAGE, file=sys.stderr)
+            return 2
+        name = args[1]
+        rest = args[2:]
+        if "--http" in rest:
+            i = rest.index("--http")
+            if i + 1 >= len(rest):
+                print("usage: banna config mcp add <name> --http <url>", file=sys.stderr)
+                return 2
+            url = rest[i + 1]
+            path = add_http_server(name, url)
+            print(f"added MCP server {name!r} [http] {url}  →  {path}")
+            return 0
+        if "--" in rest:
+            i = rest.index("--")
+            cmd_parts = rest[i + 1:]
+            if not cmd_parts:
+                print("usage: banna config mcp add <name> -- <cmd> [args…]", file=sys.stderr)
+                return 2
+            command, cmd_args = cmd_parts[0], cmd_parts[1:]
+            path = add_stdio_server(name, command, cmd_args)
+            shown = " ".join(cmd_parts)
+            print(f"added MCP server {name!r} [stdio] {shown}  →  {path}")
+            return 0
+        print(_MCP_USAGE, file=sys.stderr)
+        return 2
+
+    if verb == "remove":
+        if len(args) < 2:
+            print("usage: banna config mcp remove <name>", file=sys.stderr)
+            return 2
+        if remove_server(args[1]):
+            print(f"removed MCP server {args[1]!r}")
+            return 0
+        print(f"(no such MCP server: {args[1]})", file=sys.stderr)
+        return 1
+
+    print(_MCP_USAGE, file=sys.stderr)
     return 2
 
 

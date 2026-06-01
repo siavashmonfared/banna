@@ -119,6 +119,9 @@ class MyAgentApp:
     # pause it around a blocking prompt.
     _package_policy: Any = None
     _active_status: Any = None
+    # MCP servers: connected once on first tool build, reused across
+    # rebuilds, and shut down when the REPL exits.
+    _mcp_manager: Any = None
 
     # ------------------------------------------------------------------
     # build / rebuild
@@ -163,7 +166,41 @@ class MyAgentApp:
         # persist across turns within this session.
         if self.session.memory_store is not None:
             tool_list.append(make_memory_tool(self.session.memory_store))
+        # MCP server tools. Connect once (first rebuild), then reuse the
+        # live sessions across subsequent rebuilds (/model, /policy, …).
+        tool_list.extend(self._mcp_tools())
         self.tools = ToolRegistry(tool_list)
+
+    def _mcp_tools(self) -> list:
+        """Connect configured MCP servers (once) and return their bridged
+        tools, registering each as permission-gated. Failures are warned
+        and skipped — a broken server never blocks the REPL."""
+        if self._mcp_manager is None:
+            from ..tools.mcp import McpManager
+            from .mcp_config import load_mcp_configs
+            configs = load_mcp_configs()
+            if not configs:
+                return []
+            self._mcp_manager = McpManager(
+                configs, prefix=True,
+                warn=lambda m: self.console.print(f"[yellow]{m}[/yellow]"),
+            )
+            self._mcp_manager.start_all()
+            from ..core.agent import register_gated_tool
+            for t in self._mcp_manager.tools():
+                register_gated_tool(t.name, risk="mcp")
+            n = self._mcp_manager.server_count()
+            ntools = len(self._mcp_manager.tools())
+            if ntools:
+                self.console.print(
+                    f"[dim]mcp: {ntools} tool(s) from {n} server(s)[/dim]")
+        return self._mcp_manager.tools()
+
+    def close_mcp(self) -> None:
+        """Shut down all MCP server subprocesses/sessions."""
+        if self._mcp_manager is not None:
+            self._mcp_manager.close_all()
+            self._mcp_manager = None
 
     def _make_user_io(self) -> Any:
         """Build a UserIO for the loop's ask_user + permission gate.
@@ -478,6 +515,14 @@ class MyAgentApp:
             error=err,
         ), state)
 
+        # Auto-save to the resumable session store (best-effort; never
+        # let a persistence hiccup interrupt the conversation).
+        try:
+            from .sessions import autosave
+            autosave(self.session)
+        except Exception:
+            pass
+
     # ------------------------------------------------------------------
     # REPL
     # ------------------------------------------------------------------
@@ -511,6 +556,12 @@ class MyAgentApp:
             return ""
 
     def run(self) -> int:
+        try:
+            return self._run_loop()
+        finally:
+            self.close_mcp()
+
+    def _run_loop(self) -> int:
         self.print_header()
         self.console.print("[dim]Type a question, or /help for commands. Ctrl-D to exit.[/dim]")
         while True:
@@ -671,6 +722,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                          "BANNA_SANDBOX_IMAGE env var.")
     ap.add_argument("--skills", action="store_true",
                     help="Enable skill-library injection + harvest. Off by default.")
+    ap.add_argument("--resume", nargs="?", const="__pick__", default=None,
+                    metavar="ID",
+                    help="Resume a previous conversation. `--resume` with no "
+                         "argument shows a picker of recent sessions; "
+                         "`--resume <id>` resumes that session directly; "
+                         "`--resume last` resumes the most recent.")
 
     return ap.parse_args(argv)
 
@@ -784,6 +841,9 @@ def main(argv: list[str] | None = None) -> int:
         app.console.print(
             f"[dim]loaded {dotenv_n} env var(s) from {dotenv_path}[/dim]"
         )
+    if args.resume is not None:
+        _apply_resume(app, args.resume)
+
     try:
         app.rebuild_llm()
     except Exception as exc:
@@ -793,6 +853,56 @@ def main(argv: list[str] | None = None) -> int:
     app.rebuild_tools()
     app.rebuild_policy()
     return app.run()
+
+
+def _apply_resume(app: "MyAgentApp", which: str) -> None:
+    """Restore a prior session into `app` per the --resume argument.
+
+    `__pick__` (bare --resume) lists recent sessions and prompts; `last`
+    resumes the most recent; anything else is treated as a session id or
+    path. On any miss we warn and start fresh rather than abort.
+    """
+    from .sessions import latest_session, list_sessions, load_session
+
+    target_id: str | None = None
+    if which == "__pick__":
+        infos = list_sessions(limit=15)
+        if not infos:
+            app.console.print("[yellow]no saved sessions to resume[/yellow]")
+            return
+        app.console.print("[bold]recent sessions:[/bold]")
+        for n, info in enumerate(infos, 1):
+            app.console.print(
+                f"  [bold]{n}[/bold]. {info.id}  "
+                f"[dim]({info.n_turns} turn(s))[/dim]  {info.first_question[:60]}")
+        try:
+            raw = input("resume which? [number, or Enter to skip]: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            raw = ""
+        if not raw:
+            return
+        try:
+            target_id = infos[int(raw) - 1].id
+        except (ValueError, IndexError):
+            app.console.print("[yellow]invalid choice; starting fresh[/yellow]")
+            return
+    elif which == "last":
+        info = latest_session()
+        if info is None:
+            app.console.print("[yellow]no saved sessions to resume[/yellow]")
+            return
+        target_id = info.id
+    else:
+        target_id = which
+
+    try:
+        app.session = load_session(target_id)
+    except FileNotFoundError:
+        app.console.print(f"[yellow]no such session: {target_id}; starting fresh[/yellow]")
+        return
+    app.console.print(
+        f"[green]resumed[/green] {len(app.session.turns)} turn(s) "
+        f"from session [bold]{target_id}[/bold]")
 
 
 if __name__ == "__main__":
