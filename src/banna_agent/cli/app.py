@@ -43,7 +43,7 @@ from ..tools.python_sandbox import make_python_sandbox_tool
 from ..tools.run_shell import make_run_shell_tool
 from ..tools.search import make_search_tool
 from ..tools.url_reader import make_url_reader_tool
-from .commands import POLICY_NAMES, dispatch, is_command
+from .commands import POLICY_NAMES, dispatch, install_completer, is_command
 from .display import (
     StreamingEventLog,
     final_answer_panel,
@@ -563,7 +563,8 @@ class MyAgentApp:
 
     def _run_loop(self) -> int:
         self.print_header()
-        self.console.print("[dim]Type a question, or /help for commands. Ctrl-D to exit.[/dim]")
+        install_completer()  # Tab-completion for /commands
+        self.console.print("[dim]Type a question, or /help for commands (Tab completes). Ctrl-D to exit.[/dim]")
         while True:
             line = self._read_line()
             if line is None:

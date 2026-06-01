@@ -1297,6 +1297,49 @@ COMMANDS: dict[str, Callable[[Any, list[str]], bool]] = {
 }
 
 
+def command_names() -> list[str]:
+    """Sorted list of registered command names (no leading slash)."""
+    return sorted(COMMANDS)
+
+
+def install_completer() -> None:
+    """Bind a readline Tab-completer for `/command` names.
+
+    Typing `/p` then Tab completes to `/policy` (or lists candidates when
+    several match). No-op if readline isn't available (e.g. piped input).
+    """
+    try:
+        import readline
+    except ImportError:
+        return
+
+    def _completer(text: str, state: int):
+        # Only complete at the start of the line and only for /commands.
+        buf = readline.get_line_buffer()
+        if not buf.startswith("/"):
+            return None
+        # Complete the first token only (the command), not its args.
+        head = buf[1:]
+        if " " in head:
+            return None
+        options = [f"/{n}" for n in COMMANDS if n.startswith(head.lower())]
+        options.sort()
+        return options[state] if state < len(options) else None
+
+    readline.set_completer(_completer)
+    # libedit (macOS default) uses a different bind syntax than GNU readline.
+    if "libedit" in (getattr(readline, "__doc__", "") or ""):
+        readline.parse_and_bind("bind ^I rl_complete")
+    else:
+        readline.parse_and_bind("tab: complete")
+    # Don't treat '/' as a word break, so the whole "/policy" is the token.
+    try:
+        delims = readline.get_completer_delims().replace("/", "")
+        readline.set_completer_delims(delims)
+    except Exception:
+        pass
+
+
 def is_command(line: str) -> bool:
     return line.strip().startswith("/")
 
@@ -1319,6 +1362,18 @@ def dispatch(app: Any, line: str) -> bool:
     args = tokens[1:]
     handler = COMMANDS.get(name)
     if handler is None:
+        # Not an exact command — try prefix matching so `/p` resolves toward
+        # `/policy` etc. A unique prefix runs directly; an ambiguous one
+        # lists the candidates (discoverable without scrolling /help).
+        matches = sorted(n for n in COMMANDS if n.startswith(name))
+        if len(matches) == 1:
+            return COMMANDS[matches[0]](app, args)
+        if len(matches) > 1:
+            shown = "  ".join(f"/{m}" for m in matches)
+            app.console.print(
+                f"[yellow]/{name}[/yellow] is ambiguous — matches: {shown}"
+            )
+            return False
         app.console.print(
             f"[red]unknown command:[/red] /{name}   (try /help)"
         )
