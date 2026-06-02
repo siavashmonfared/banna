@@ -293,10 +293,13 @@ class MyAgentApp:
         self.policy = self._build_policy()
 
     def _build_policy(self) -> Any:
-        # `react+` is the only policy exposed by the public CLI. It
-        # subclasses `ReActPolicy`, so the entire ReAct engine is
-        # inherited; the bare `react` module ships only as that parent.
+        # Two policies are exposed by the public CLI: the bare `react`
+        # engine (autonomous; the benchmarked baseline) and `react+`, the
+        # default, which subclasses it to add the interactive affordances.
         name = self.policy_name
+        if name == "react":
+            from ..policies.react import ReActPolicy
+            return ReActPolicy(model=self.model)
         if name == "react+":
             from ..policies.react_plus import ReActPlusPolicy
             return ReActPlusPolicy(model=self.model)
@@ -821,10 +824,10 @@ def main(argv: list[str] | None = None) -> int:
         else cfg_default.get("model", args.model)
     policy_name = args.policy if _flag_present("--policy") \
         else cfg_default.get("policy", args.policy)
-    # A saved config may name a policy this build no longer exposes (e.g. an
-    # older `policy = "react"` from before react+ became the sole CLI
-    # policy). Don't crash on a stale default — fall back to the argparse
-    # default and tell the user, so the REPL still starts.
+    # A saved config may name a policy this build no longer exposes (e.g. a
+    # research policy like `best_of_n` that lives only in the private repo).
+    # Don't crash on a stale default — fall back to the argparse default and
+    # tell the user, so the REPL still starts.
     if policy_name not in POLICY_NAMES:
         fallback = args.policy if args.policy in POLICY_NAMES else POLICY_NAMES[0]
         print(

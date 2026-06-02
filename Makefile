@@ -8,7 +8,7 @@ test:  ## run the full test suite
 
 repro:  ## one-command demo: install + run a single GAIA L1 question
 	pip install -e ".[dev]"
-	python -m banna_agent.benchmarks.gaia.runner \
+	python experiments/02_gaia_full/run.py \
 	    --policy react --provider openai --model gpt-5-nano \
 	    --level 1 --n 1
 

@@ -48,6 +48,10 @@ End-to-end wall time on a typical home connection is ~3–4 hours; total cost ~$
 
 The L3 gap reflects the chained-reasoning regime: tasks requiring 5+ steps of dependent search/read/reason against the model's effective context window. This is the regime where compositional policies (planning, best-of-N, etc.) are expected to help; their validation runs are in progress.
 
+### Cross-model L3 probe (`claude-sonnet-4-5`)
+
+The same `react` policy, harness, and tools — run on `claude-sonnet-4-5` over the identical 26 L3 tasks — scores **26.9 % (7 / 26)**, versus **15.4 % (4 / 26)** for `gpt-5-nano` on the same set. A capacity jump nearly doubles L3 accuracy with no change to the policy or tooling, consistent with the L3 bottleneck being model capacity rather than the scaffolding. The trade-off is cost: this L3-only run cost **~$20.75**, roughly 24× the entire 165-task `gpt-5-nano` run. This is a single-set probe, not a full cross-model benchmark.
+
 ### Exit distribution
 
 | Reason loop exited | Count | Share |

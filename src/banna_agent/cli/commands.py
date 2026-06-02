@@ -20,11 +20,13 @@ from .display import tools_table, turns_table
 
 # Per-policy human-readable knobs we accept for `/policy <name>`.
 #
-# `react+` is the only policy the public CLI exposes. It subclasses the
-# bare ReAct loop (which ships as its parent class, not as a selectable
-# policy), adding the interactive `ask_user` affordance, a per-tool
-# permission gate, and error-scoping prompt guardrails.
+# Two policies are selectable from the public CLI:
+#   - `react`  — the bare ReAct engine (autonomous; the benchmarked baseline).
+#   - `react+` — the default; subclasses `react` to add the interactive
+#                `ask_user` affordance, a per-tool permission gate, and
+#                error-scoping prompt guardrails.
 POLICY_NAMES = (
+    "react",
     "react+",
 )
 

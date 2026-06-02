@@ -43,7 +43,7 @@ banna --policy react --provider openai --model gpt-5-nano
 ```
 $ banna --policy react --provider openai --model gpt-5-nano
 
-● banna · v0.1.2   provider=openai   model=gpt-5-nano   policy=react
+● banna · v0.2.2   provider=openai   model=gpt-5-nano   policy=react
 
 > How many studio albums did Mercedes Sosa release between 2000 and 2009?
 
@@ -113,14 +113,14 @@ banna trace view <log.jsonl> -o report.html         # custom output path
 
 ## Policies
 
-A `Policy` implements a single method, `propose(state, llm, tools) → Action`; the driver is agnostic to which strategy is running. Two policies are available from the CLI via `--policy` / `/policy`:
+A `Policy` implements a single method, `propose(state, llm, tools) → Action`; the driver is agnostic to which strategy is running. Two policies are available from the CLI via `--policy` / `/policy` (`react+` is the default):
 
 | Policy | Description |
 |---|---|
 | `react` | The core ReAct loop. One LLM call per tick; the model chooses `THINK`, `TOOL_CALL`, or `FINAL_ANSWER`. Fully autonomous, with no human in the loop. This is the benchmarked baseline. |
-| `react+` | ReAct extended for interactive, human-in-the-loop use. Adds an `ask_user` clarifying-question affordance, a per-tool permission gate for shell commands, and error-scoping prompt guardrails. `react+` subclasses `react`, so it inherits the entire engine unchanged. |
+| `react+` *(default)* | ReAct extended for interactive, human-in-the-loop use. Adds an `ask_user` clarifying-question affordance, a per-tool permission gate for shell commands, and error-scoping prompt guardrails. `react+` subclasses `react`, so it inherits the entire engine unchanged. |
 
-`react+` is intended for interactive sessions where a person is present to answer clarifying questions and approve tool calls — conditions the GAIA benchmark does not test. On a capacity-constrained model with no human in the loop, its additional machinery measures lower than bare `react` (see results below); the two are kept separate for this reason.
+`react+` is the default because it is built for interactive sessions, where a person is present to answer clarifying questions and approve tool calls. The GAIA benchmark tests neither — there is no human in the loop — so the published numbers below are for the bare `react` engine. (`react+` benchmark figures from an earlier build have been retired; fresh interactive-policy evaluation runs are planned.)
 
 ## Architecture
 
@@ -195,14 +195,14 @@ When any axis trips without a committed answer, the driver calls `policy.synthes
 
 ## GAIA validation results
 
-Measured on the GAIA validation set (165 questions across Levels 1–3) with `gpt-5-nano`.
+Measured with the bare `react` engine: a full run on `gpt-5-nano` (165 questions across Levels 1–3), plus a cross-model L3-only probe on `claude-sonnet-4-5`.
 
-| Policy | Overall | L1 | L2 | L3 | Cost |
+| Run | Overall | L1 | L2 | L3 | Cost |
 |---|---|---|---|---|---|
-| `react` | **42.4%** (70/165) | 49.1% | 46.5% | 15.4% | ~$0.87 |
-| `react+` | 35.8% (59/165) | 45.3% | 38.4% | 7.7% | ~$0.87 |
+| `react` · `gpt-5-nano` (full, 165 Q) | **42.4%** (70/165) | 49.1% | 46.5% | 15.4% | ~$0.87 |
+| `react` · `claude-sonnet-4-5` (L3 only, 26 Q) | — | — | — | **26.9%** (7/26) | ~$20.75 |
 
-`react` finishes 92% of tasks through the normal commit path; the remaining 8% trip a budget axis. Median task finishes in 4 productive steps in under a minute. `react+` measures lower here because its interactive affordances (`ask_user`, permission gating) have no human to engage on the benchmark; it is built for interactive use, not autonomous scoring.
+On `gpt-5-nano`, `react` finishes 92% of tasks through the normal commit path; the remaining 8% trip a budget axis. Median task finishes in 4 productive steps in under a minute. The Level-3 gap is the chained-reasoning regime: swapping in `claude-sonnet-4-5` (same policy, same tools) nearly doubles L3 accuracy (26.9% vs 15.4%) at ~24× the cost — a single-set probe consistent with model capacity, not the scaffolding, being the L3 bottleneck.
 
 Full per-level numbers, exit-reason distributions, operational statistics, reproduction instructions, and an evaluation-limitations section are in [`docs/evals/gaia_validation_report.md`](docs/evals/gaia_validation_report.md). The full validation runner is in `experiments/02_gaia_full/run.py`.
 
@@ -215,7 +215,7 @@ src/banna_agent/
 ├── tools/         search, read_url, read_file, pdf/xlsx, python_sandbox,
 │                  calculator, run_shell, grep, list_files, plan, memory, final_answer
 │   └── mcp/       MCP client (stdio + HTTP/SSE) + JsonTool bridge
-├── policies/      react+ (the CLI policy) over the bare react engine
+├── policies/      react (engine, benchmarked) + react+ (default interactive CLI policy)
 ├── verifiers/     arithmetic, citation, coverage, format, command (+ base protocol)
 ├── benchmarks/    gaia/ (loader, runner, scorer, report)
 ├── memory/        in_memory_store, jsonl_store, skill_library, embeddings
@@ -229,7 +229,7 @@ Tests mirror `src/` under `tests/`. Run them with:
 pytest -q
 ```
 
-Current status on this branch: **823 passed, 3 skipped** (skips require the optional `chromadb` backend or real API keys).
+Current status on this branch: **829 passed, 3 skipped** (skips require the optional `chromadb` backend or real API keys).
 
 ## Limitations
 

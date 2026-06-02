@@ -329,7 +329,8 @@ def run_wizard() -> WizardResult:
     config_path = write_config({"default": {
         "provider": provider,
         "model": model,
-        # `react+` is the only policy the public CLI exposes.
+        # `react+` is the default policy (interactive); `react` is also
+        # selectable via --policy / /policy.
         "policy": "react+",
     }})
     env_path = None
