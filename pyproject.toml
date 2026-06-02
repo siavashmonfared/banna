@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "banna"
-version = "0.2.1"
+version = "0.2.2"
 description = "A from-scratch, provider-agnostic reasoning agent with a typed state substrate and verifier-guided search. Primary benchmark: GAIA."
 readme = "README.md"
 requires-python = ">=3.10"
