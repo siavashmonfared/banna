@@ -120,7 +120,7 @@ A `Policy` implements a single method, `propose(state, llm, tools) → Action`; 
 | `react` | The core ReAct loop. One LLM call per tick; the model chooses `THINK`, `TOOL_CALL`, or `FINAL_ANSWER`. Fully autonomous, with no human in the loop. This is the benchmarked baseline. |
 | `react+` *(default)* | ReAct extended for interactive, human-in-the-loop use. Adds an `ask_user` clarifying-question affordance, a per-tool permission gate for shell commands, and error-scoping prompt guardrails. `react+` subclasses `react`, so it inherits the entire engine unchanged. |
 
-`react+` is the default because it is built for interactive sessions, where a person is present to answer clarifying questions and approve tool calls. The GAIA benchmark tests neither — there is no human in the loop — so the published numbers below are for the bare `react` engine. (`react+` benchmark figures from an earlier build have been retired; fresh interactive-policy evaluation runs are planned.)
+`react+` is the default because it is built for interactive sessions, where a person is present to answer clarifying questions and approve tool calls. The GAIA benchmark tests neither — there is no human in the loop — so the published numbers below are for the bare `react` engine.
 
 ## Architecture
 

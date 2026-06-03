@@ -28,6 +28,7 @@ results.jsonl
 *.jsonl
 **/results/
 experiments/**/runs/
+/runs/
 .quarantine/
 
 # --- internal scratchpad / personal notes ---

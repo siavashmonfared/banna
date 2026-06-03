@@ -46,7 +46,7 @@ End-to-end wall time on a typical home connection is ~3–4 hours; total cost ~$
 | L2 | 86 | **46.5 %** (40 / 86) |
 | L3 | 26 | 15.4 % (4 / 26) |
 
-The L3 gap reflects the chained-reasoning regime: tasks requiring 5+ steps of dependent search/read/reason against the model's effective context window. This is the regime where compositional policies (planning, best-of-N, etc.) are expected to help; their validation runs are in progress.
+The L3 gap reflects the chained-reasoning regime: tasks requiring 5+ steps of dependent search/read/reason against the model's effective context window. The cross-model probe below tests whether this gap is driven by model capacity rather than the scaffolding.
 
 ### Cross-model L3 probe (`claude-sonnet-4-5`)
 
@@ -95,21 +95,3 @@ The `react` loop ships with five structural choices that meaningfully change beh
 - **Single-agent loop.** This is not a multi-agent system. Tasks requiring delegation across specialist agents are out of scope.
 - **No video / image-reasoning tools.** A small number of GAIA tasks require video frame extraction or vision-grade image reasoning; those are structurally unreachable without additional tools.
 - **Tool isolation depends on the backend.** This run used the default `process` backend (host subprocess), gated by a confirmation prompt and a denylist. A `docker` backend (network-less, read-only container) is available via `--sandbox=docker` for untrusted input; it was not used for this evaluation, so the numbers reflect host execution.
-
-## Why not wrap `react` with a verifier-retry loop?
-
-A natural question — and one we measured. Two alternative policies were validated against bare `react` on the same model, same substrate, same task set:
-
-| Policy | Accuracy | Δ vs. bare `react` |
-|---|---|---|
-| `react` (bare) | **42.4 %** (70 / 165) | — |
-| `react` + verifier-retry with self-consistency checks (Format / Arithmetic / Citation / Coverage on the trace) | 37.6 % (62 / 165) | **−4.8 pp** |
-| `react` + verifier-retry with reflexion-style closure check (LLM-as-critic grading the answer against the user's stated constraints) | 40.0 % (66 / 165) | **−2.4 pp** |
-
-Both wrapping strategies regressed on this model. Mechanism: each elaboration consumes a slice of the model's reasoning capacity (extra LLM call, retry tick has to reconstruct context, false-positive retries discard correct answers). On `gpt-5-nano`, there isn't enough headroom for that overhead to pay off — the retry tick degrades the answer more often than it improves it. The reflexion variant is closer to neutral because it skips silently on questions with no extractable constraints, but still regresses on net.
-
-The plausible interpretation: each elaboration only pays off when the model has enough spare reasoning capacity to absorb its overhead (an extra LLM call, a retry tick that must reconstruct context, the risk of a false-positive retry discarding a correct answer). On `gpt-5-nano`, that headroom isn't there, so the overhead dominates and the wrapping regresses.
-
-## Ongoing work
-
-Further policies (planner-based decomposition, best-of-N selection, verifier-retry) are developed and validated in the private research repo; they are not part of this public tree, which ships only the bare `react` engine and its interactive `react+` subclass. Each validated row graduates into the public CLI as it lands, so the public surface stays to what has a benchmark run behind it.
