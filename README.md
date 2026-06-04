@@ -206,6 +206,8 @@ On `gpt-5-nano`, `react` finishes 92% of tasks through the normal commit path; t
 
 Full per-level numbers, exit-reason distributions, operational statistics, reproduction instructions, and an evaluation-limitations section are in [`docs/evals/gaia_validation_report.md`](docs/evals/gaia_validation_report.md). The full validation runner is in `experiments/02_gaia_full/run.py`.
 
+A 2×2 ablation crossing model capacity with intrinsic verification — showing that `verifier_retry` flips from net-negative on `gpt-5-nano` to net-positive on `gpt-5-mini`, tracking the verifier's false-positive rejection rate — is in [`docs/evals/ablation.md`](docs/evals/ablation.md) (with an explicit statistical-honesty section: the per-model effects are directional, not significant at n=165).
+
 ## Repository layout
 
 ```
