@@ -113,14 +113,15 @@ banna trace view <log.jsonl> -o report.html         # custom output path
 
 ## Policies
 
-A `Policy` implements a single method, `propose(state, llm, tools) → Action`; the driver is agnostic to which strategy is running. Two policies are available from the CLI via `--policy` / `/policy` (`react+` is the default):
+A `Policy` implements a single method, `propose(state, llm, tools) → Action`; the driver is agnostic to which strategy is running. Three policies are available from the CLI via `--policy` / `/policy` (`react+` is the default):
 
 | Policy | Description |
 |---|---|
 | `react` | The core ReAct loop. One LLM call per tick; the model chooses `THINK`, `TOOL_CALL`, or `FINAL_ANSWER`. Fully autonomous, with no human in the loop. This is the benchmarked baseline. |
 | `react+` *(default)* | ReAct extended for interactive, human-in-the-loop use. Adds an `ask_user` clarifying-question affordance, a per-tool permission gate for shell commands, and error-scoping prompt guardrails. `react+` subclasses `react`, so it inherits the entire engine unchanged. |
+| `verifier_retry` | A self-checking wrapper. It delegates to an inner policy (`react` by default) and, when that policy proposes a `FINAL_ANSWER`, re-checks it against the four intrinsic verifiers (`arithmetic`, `citation`, `format`, `coverage`); on any failure it discards the answer and feeds the verifier critique back as a `THINK`, forcing a revision (up to `max_retries`). Orthogonal to `react+` — it composes with any inner policy. See the [ablation](docs/evals/ablation.md) for where this helps and where it hurts. |
 
-`react+` is the default because it is built for interactive sessions, where a person is present to answer clarifying questions and approve tool calls. The GAIA benchmark tests neither — there is no human in the loop — so the published numbers below are for the bare `react` engine.
+`react+` is the default because it is built for interactive sessions, where a person is present to answer clarifying questions and approve tool calls. `react` and `verifier_retry` are both fully autonomous (no human in the loop), which is what the GAIA benchmark requires — so the published numbers below are for those two.
 
 ## Architecture
 
@@ -206,7 +207,16 @@ On `gpt-5-nano`, `react` finishes 92% of tasks through the normal commit path; t
 
 Full per-level numbers, exit-reason distributions, operational statistics, reproduction instructions, and an evaluation-limitations section are in [`docs/evals/gaia_validation_report.md`](docs/evals/gaia_validation_report.md). The full validation runner is in `experiments/02_gaia_full/run.py`.
 
-A 2×2 ablation crossing model capacity with intrinsic verification — showing that `verifier_retry` flips from net-negative on `gpt-5-nano` to net-positive on `gpt-5-mini`, tracking the verifier's false-positive rejection rate — is in [`docs/evals/ablation.md`](docs/evals/ablation.md) (with an explicit statistical-honesty section: the per-model effects are directional, not significant at n=165).
+### Capacity × verification (2×2 ablation)
+
+Does intrinsic self-verification help? It depends on the model. This 2×2 crosses **model capacity** (`gpt-5-nano` vs `gpt-5-mini`) with **verification** (bare `react` vs `verifier_retry(react)` over the four intrinsic verifiers), all on the full 165-task GAIA validation set:
+
+| Model | `react` | `verifier_retry(react)` | Δ (verification) |
+|---|---|---|---|
+| `gpt-5-nano` | 42.4% (70/165) | 37.6% (62/165) | **−4.8pp** |
+| `gpt-5-mini` | 51.5% (85/165) | 53.9% (89/165) | **+2.4pp** |
+
+**The sign flips:** intrinsic verification is net-negative on the capacity-limited model and net-positive on the stronger one (capacity × verification interaction = +7.3pp). The mechanism is the verifier's false-positive rejection rate — it breaks already-correct answers 30% of the time on `gpt-5-nano` but only 14% on `gpt-5-mini`. Both single-model effects are directional, not significant at n=165; the false-positive rate is the directly-measured number that carries the result. Full per-level numbers, the McNemar tests, cost, and reproduction are in [`docs/evals/ablation.md`](docs/evals/ablation.md).
 
 ## Repository layout
 
@@ -217,7 +227,7 @@ src/banna_agent/
 ├── tools/         search, read_url, read_file, pdf/xlsx, python_sandbox,
 │                  calculator, run_shell, grep, list_files, plan, memory, final_answer
 │   └── mcp/       MCP client (stdio + HTTP/SSE) + JsonTool bridge
-├── policies/      react (engine, benchmarked) + react+ (default interactive CLI policy)
+├── policies/      react (engine, benchmarked) + react+ (interactive, default) + verifier_retry (self-checking wrapper)
 ├── verifiers/     arithmetic, citation, coverage, format, command (+ base protocol)
 ├── benchmarks/    gaia/ (loader, runner, scorer, report)
 ├── memory/        in_memory_store, jsonl_store, skill_library, embeddings

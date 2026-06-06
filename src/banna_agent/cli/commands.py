@@ -20,14 +20,18 @@ from .display import tools_table, turns_table
 
 # Per-policy human-readable knobs we accept for `/policy <name>`.
 #
-# Two policies are selectable from the public CLI:
-#   - `react`  — the bare ReAct engine (autonomous; the benchmarked baseline).
-#   - `react+` — the default; subclasses `react` to add the interactive
-#                `ask_user` affordance, a per-tool permission gate, and
-#                error-scoping prompt guardrails.
+# Three policies are selectable from the public CLI:
+#   - `react`          — the bare ReAct engine (autonomous; the benchmarked baseline).
+#   - `react+`         — the default; subclasses `react` to add the interactive
+#                        `ask_user` affordance, a per-tool permission gate, and
+#                        error-scoping prompt guardrails.
+#   - `verifier_retry` — wraps `react` in a verifier feedback loop: re-checks each
+#                        proposed FINAL_ANSWER against the intrinsic verifiers and
+#                        forces a revision when any fail (orthogonal to react+).
 POLICY_NAMES = (
     "react",
     "react+",
+    "verifier_retry",
 )
 
 

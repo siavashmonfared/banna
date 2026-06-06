@@ -17,7 +17,7 @@ After the run, the script prints the resume table by calling
 
 Flags:
     --provider / --model        — same as experiment 01.
-    --policy                    — react | react+
+    --policy                    — react | react+ | verifier_retry
     --level / --n               — GAIA level + max tasks.
     --dataset / --jsonl         — gaia (HF) or jsonl with --jsonl path.
     --out-dir                   — defaults to runs/<ts>_<policy>_L<level>.
@@ -80,7 +80,7 @@ def main() -> int:
     ap.add_argument("--model", default=None)
     ap.add_argument(
         "--policy",
-        choices=["react", "react+"],
+        choices=["react", "react+", "verifier_retry"],
         default="react",
     )
     ap.add_argument("--level", type=int, default=1,
@@ -334,10 +334,11 @@ GAIA_SYSTEM_PROMPT = (
 
 
 def _build_policy(args):
-    # The public tree ships the bare ReAct engine (the benchmarked policy)
-    # and its react+ subclass. Research policies (planner / bfs / dfs /
-    # best-first / best-of-N / verifier-retry) live in the private repo
-    # and are reintroduced here as each one's validation row lands.
+    # The public tree ships the bare ReAct engine (the benchmarked policy),
+    # its react+ subclass, and verifier_retry (the answer-quality wrapper
+    # used in the capacity x verification ablation). The remaining research
+    # policies (planner / bfs / dfs / best-first / best-of-N) live in the
+    # private repo and are reintroduced here as each one's validation row lands.
     from banna_agent.policies.react import ReActPolicy
 
     if args.policy == "react":
@@ -345,6 +346,12 @@ def _build_policy(args):
     if args.policy == "react+":
         from banna_agent.policies.react_plus import ReActPlusPolicy
         return ReActPlusPolicy(model=args.model, system_prompt=GAIA_SYSTEM_PROMPT)
+    if args.policy == "verifier_retry":
+        # verifier_retry(react) over the four intrinsic verifiers
+        # (arithmetic, citation, format, coverage) — the default set.
+        from banna_agent.policies.verifier_retry import VerifierRetryPolicy
+        inner = ReActPolicy(model=args.model, system_prompt=GAIA_SYSTEM_PROMPT)
+        return VerifierRetryPolicy(inner=inner)
     raise ValueError(f"unknown policy: {args.policy}")
 
 

@@ -293,9 +293,11 @@ class MyAgentApp:
         self.policy = self._build_policy()
 
     def _build_policy(self) -> Any:
-        # Two policies are exposed by the public CLI: the bare `react`
-        # engine (autonomous; the benchmarked baseline) and `react+`, the
-        # default, which subclasses it to add the interactive affordances.
+        # Three policies are exposed by the public CLI: the bare `react`
+        # engine (autonomous; the benchmarked baseline); `react+`, the
+        # default, which subclasses it to add the interactive affordances;
+        # and `verifier_retry`, which wraps `react` in a verifier feedback
+        # loop (orthogonal to react+).
         name = self.policy_name
         if name == "react":
             from ..policies.react import ReActPolicy
@@ -303,6 +305,10 @@ class MyAgentApp:
         if name == "react+":
             from ..policies.react_plus import ReActPlusPolicy
             return ReActPlusPolicy(model=self.model)
+        if name == "verifier_retry":
+            from ..policies.react import ReActPolicy
+            from ..policies.verifier_retry import VerifierRetryPolicy
+            return VerifierRetryPolicy(inner=ReActPolicy(model=self.model))
         raise ValueError(f"unknown policy: {name}")
 
     # ------------------------------------------------------------------

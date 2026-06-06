@@ -79,34 +79,32 @@ the main validation run.
 
 ## Reproduce
 
-The `nano` rows come from the main validation configs; the `mini` rows use
-the same configs with `model: gpt-5-mini`. Each row is one YAML run through
-`experiments/02_gaia_full/run.py --config <row>.yaml` over all 165 tasks
-(`all_levels: true`, `budget_wall_s: 240`, `budget_cost: 2.0`).
+From a clean clone (`pip install -e ".[dev]"`, `export OPENAI_API_KEY=sk-...`),
+each of the four cells is one run of the flag-driven validation runner over all
+165 tasks. `--policy verifier_retry` wraps `react` over the four intrinsic
+verifiers (`arithmetic`, `citation`, `format`, `coverage`) by default — exactly
+the set used here.
 
-```yaml
-# react × gpt-5-mini
-id: A_react_mini
-policy: react
-model: gpt-5-mini
-provider: openai
-all_levels: true
-budget_wall_s: 240
-budget_cost: 2.0
+```bash
+# Row A — bare react
+python experiments/02_gaia_full/run.py --policy react \
+    --provider openai --model gpt-5-nano \
+    --all-levels --budget-wall-s 240 --budget-cost 2.0
+python experiments/02_gaia_full/run.py --policy react \
+    --provider openai --model gpt-5-mini \
+    --all-levels --budget-wall-s 240 --budget-cost 2.0
+
+# Row B — verifier_retry(react) + intrinsic verifiers
+python experiments/02_gaia_full/run.py --policy verifier_retry \
+    --provider openai --model gpt-5-nano \
+    --all-levels --budget-wall-s 240 --budget-cost 2.0
+python experiments/02_gaia_full/run.py --policy verifier_retry \
+    --provider openai --model gpt-5-mini \
+    --all-levels --budget-wall-s 240 --budget-cost 2.0
 ```
 
-```yaml
-# verifier_retry(react) + intrinsic verifiers × gpt-5-mini
-id: B_verifier_retry_react_intrinsic_mini
-policy: verifier_retry
-inner: react
-verifiers: [format, arithmetic, citation, coverage]
-model: gpt-5-mini
-provider: openai
-all_levels: true
-budget_wall_s: 240
-budget_cost: 2.0
-```
+The `nano` rows are reused from the main validation run; the `mini` rows are the
+two runs added for this ablation.
 
 ## Limitations
 
