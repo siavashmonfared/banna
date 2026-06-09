@@ -77,6 +77,25 @@ Verification adds ~15–25¢ per full run (the retry ticks). The `mini` rows
 are the two runs added for this ablation; the `nano` rows are reused from
 the main validation run.
 
+## Shipped-policy equivalence (why `react`, not `react+`)
+
+The rows above use the autonomous policies (`react`, `verifier_retry(react)`),
+not the interactive defaults the CLI ships (`react+`, `react+verify`). That is
+deliberate: `react+`'s interactive affordances — `ask_user`, the per-tool
+permission gate — have no human to engage under batch evaluation, so they are
+inert. This is **measured, not assumed**. Re-running the `+` family on the full
+165-task `gpt-5-nano` set reproduces the bare-policy numbers to within one task:
+
+| Policy (gpt-5-nano, 165 Q) | Accuracy | Bare-policy baseline | Δ |
+|---|---|---|---|
+| `react+` | 43.0% (71/165) | `react` 42.4% | +0.6pp (+1) |
+| `react+verify` (= `verifier_retry(react+)`) | 39.4% (65/165) | `verifier_retry(react)` 37.6% | +1.8pp (+3) |
+
+Both land within noise of their bare counterparts, and the within-`+`-family
+verification effect on nano (43.0 → 39.4 = −3.6pp) matches the bare-family sign
+(−4.8pp). The capacity sign-flip was only run for the bare family (the `mini`
+`+` runs were out of budget), so the 2×2 above stays in bare-policy labels.
+
 ## Reproduce
 
 From a clean clone (`pip install -e ".[dev]"`, `export OPENAI_API_KEY=sk-...`),

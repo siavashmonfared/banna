@@ -83,6 +83,13 @@ def main() -> int:
         choices=["react", "react+", "verifier_retry"],
         default="react",
     )
+    ap.add_argument(
+        "--inner",
+        choices=["react", "react+"],
+        default="react",
+        help="Inner policy wrapped by --policy verifier_retry "
+             "(react = 'react+verify' uses react+). Ignored otherwise.",
+    )
     ap.add_argument("--level", type=int, default=1,
                     help="GAIA level (1/2/3). Ignored when --all-levels is set.")
     ap.add_argument("--all-levels", action="store_true",
@@ -347,10 +354,17 @@ def _build_policy(args):
         from banna_agent.policies.react_plus import ReActPlusPolicy
         return ReActPlusPolicy(model=args.model, system_prompt=GAIA_SYSTEM_PROMPT)
     if args.policy == "verifier_retry":
-        # verifier_retry(react) over the four intrinsic verifiers
+        # verifier_retry(inner) over the four intrinsic verifiers
         # (arithmetic, citation, format, coverage) — the default set.
+        # --inner react  → "react+verify" reported as verifier_retry(react)
+        # --inner react+ → "react+verify" wrapping the interactive policy
         from banna_agent.policies.verifier_retry import VerifierRetryPolicy
-        inner = ReActPolicy(model=args.model, system_prompt=GAIA_SYSTEM_PROMPT)
+        inner_name = getattr(args, "inner", "react")
+        if inner_name == "react+":
+            from banna_agent.policies.react_plus import ReActPlusPolicy
+            inner = ReActPlusPolicy(model=args.model, system_prompt=GAIA_SYSTEM_PROMPT)
+        else:
+            inner = ReActPolicy(model=args.model, system_prompt=GAIA_SYSTEM_PROMPT)
         return VerifierRetryPolicy(inner=inner)
     raise ValueError(f"unknown policy: {args.policy}")
 

@@ -218,6 +218,8 @@ Does intrinsic self-verification help? It depends on the model. This 2×2 crosse
 
 **The sign flips:** intrinsic verification is net-negative on the capacity-limited model and net-positive on the stronger one (capacity × verification interaction = +7.3pp). The mechanism is the verifier's false-positive rejection rate — it breaks already-correct answers 30% of the time on `gpt-5-nano` but only 14% on `gpt-5-mini`. Both single-model effects are directional, not significant at n=165; the false-positive rate is the directly-measured number that carries the result. Full per-level numbers, the McNemar tests, cost, and reproduction are in [`docs/evals/ablation.md`](docs/evals/ablation.md).
 
+> **Why the table reports `react` / `verifier_retry`, not the shipped `react+` defaults.** The benchmark runs the autonomous policies, because `react+`'s interactive affordances (`ask_user`, the permission gate) have no human to engage in batch and are therefore inert. This is measured, not assumed: the shipped defaults reproduce the `gpt-5-nano` row to within one task — `react+` scores **43.0%** (71/165) vs `react`'s 42.4%, and `react+verify` (= `verifier_retry(react+)`) scores **39.4%** (65/165) vs `verifier_retry(react)`'s 37.6%, same full 165-task set. The `+` policies are what you run interactively; the bare policies are what the numbers above measure, and on GAIA they are the same thing.
+
 ## Repository layout
 
 ```
