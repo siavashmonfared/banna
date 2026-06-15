@@ -832,8 +832,11 @@ class ReActPolicy:
             "Commit your best answer now via `final_answer`."
         )
         kwargs: dict[str, Any] = {
-            "messages": [Message(role="user", content=synth_user)],
-            "tools": tools.specs() if hasattr(tools, "specs") else None,
+            "messages": [Message(
+                role="user",
+                content=[ContentBlock(kind="text", text=synth_user)],
+            )],
+            "tools": tools.to_tool_specs(),
             "max_tokens": 256,
             "temperature": 0.0,
             "system": synth_system,

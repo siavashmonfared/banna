@@ -241,7 +241,6 @@ def search(
         "n_results": len(hits),
         "hits": [h.to_dict() for h in hits],
         "summary": summary,
-        "raw": {"hits": [h.to_dict() for h in hits]},
         "errors": errors,
     }
 

@@ -620,3 +620,40 @@ def test_synthesize_falls_back_to_cheap_on_llm_failure() -> None:
     assert action is not None
     assert action.answer == "fallback-answer"
     assert (action.meta or {}).get("synthesis") == "cheap_last_claim"
+
+
+def test_synthesize_llm_path_sends_real_tool_specs_and_block_content() -> None:
+    """Regression for the B5 bug pair: the LLM-driven exhaustion path must
+    send real ToolSpecs (via ``to_tool_specs()``, not the nonexistent
+    ``tools.specs()`` which silently became ``None``) and message content as
+    a list of ContentBlocks (not a bare ``str``). A real provider serializes
+    both and throws on either bug — this validating mock stands in for that
+    contract so the path can't silently fall back to ``_cheap()`` again.
+
+    Pre-fix this test fails: ``tools`` arrives as ``None`` and ``content`` as
+    a ``str``, the asserts raise inside the worker thread, the exception is
+    swallowed, and with no claims on the trace synthesis returns ``None``.
+    """
+    state = AgentState(question="What is 2+2?")
+
+    class _ValidatingLLM:
+        provider = "openai"
+        calls: list[dict[str, Any]] = []
+
+        def chat(self, **kwargs: Any) -> LLMReply:
+            type(self).calls.append(kwargs)
+            tools = kwargs.get("tools")
+            assert tools, "tools must be a non-empty list of ToolSpec"
+            assert all(isinstance(t, ToolSpec) for t in tools)
+            assert any(t.name == "final_answer" for t in tools)
+            for m in kwargs["messages"]:
+                assert isinstance(m.content, list)
+                assert all(isinstance(b, ContentBlock) for b in m.content)
+            return _tool_reply("final_answer", {"answer": "4"})
+
+    action = ReActPolicy().synthesize_on_exhaustion(
+        state, llm=_ValidatingLLM(), tools=_final_answer_tools(),
+    )
+    assert action is not None
+    assert action.answer == "4"
+    assert (action.meta or {}).get("synthesis") == "llm"
