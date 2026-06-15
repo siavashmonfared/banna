@@ -217,6 +217,16 @@ class AnthropicClient:
     aws_region: str | None = None
     aws_profile: str | None = None
     base_url: str | None = None
+    # Prompt caching on the stable prefix. When True (default), mark the
+    # system block with `cache_control: ephemeral`. Anthropic's cache order
+    # is tools → system → messages, and a breakpoint caches everything up to
+    # and including it, so one marker on `system` caches the whole
+    # tools+system prefix — identical on every tick of an agent loop, so
+    # subsequent calls read it at ~10% of input price. No-op when no system
+    # prompt is set, or when the prefix is below the model's minimum
+    # cacheable size (the API silently ignores it). Set False to disable
+    # (ablation lever / belt-and-suspenders for unusual prefixes).
+    prompt_cache: bool = True
 
     provider: str = field(default="anthropic", init=False)
 
@@ -323,7 +333,16 @@ class AnthropicClient:
             "messages": [_message_to_anthropic(m) for m in messages],
         }
         if sys_prompt:
-            kwargs["system"] = sys_prompt
+            if self.prompt_cache:
+                # Structured system form so we can attach a cache breakpoint.
+                # Caches tools+system (tools precede system in cache order).
+                kwargs["system"] = [{
+                    "type": "text",
+                    "text": sys_prompt,
+                    "cache_control": {"type": "ephemeral"},
+                }]
+            else:
+                kwargs["system"] = sys_prompt
         if temperature is not None:
             kwargs["temperature"] = temperature
         if tools:

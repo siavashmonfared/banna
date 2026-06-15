@@ -15,7 +15,13 @@ from typing import Any
 from .base import JsonTool
 
 DEFAULT_TIMEOUT_S = 20.0
-DEFAULT_MAX_CHARS = 50_000
+# QA-tuned default. Most questions are answered by a few KB of salient text;
+# a full 50k-char page (~12.5k tokens) is mostly nav/footer boilerplate and,
+# because the policy replays each observation in history, that bulk is
+# re-billed on every subsequent turn. 10k keeps the salient span while
+# bounding the replay tax. The model can still request more per call via the
+# `max_chars` argument, and `truncated=True` signals when it should.
+DEFAULT_MAX_CHARS = 10_000
 USER_AGENT = "banna_agent/0.1 (+https://github.com/)"
 
 

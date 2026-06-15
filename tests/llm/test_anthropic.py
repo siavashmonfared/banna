@@ -110,13 +110,42 @@ def test_request_plain_text_message() -> None:
 
 
 def test_request_system_prompt_flows_through() -> None:
+    # prompt_cache=False keeps the plain-string system form (ablation /
+    # back-compat path).
     sdk = _FakeSDK(fake_response=_basic_response())
-    client = AnthropicClient(sdk=sdk)
+    client = AnthropicClient(sdk=sdk, prompt_cache=False)
     client.chat(
         messages=[Message(role="user", content=[ContentBlock(kind="text", text="hi")])],
         system="You are a helpful assistant.",
     )
     assert sdk.messages.last_kwargs["system"] == "You are a helpful assistant."
+
+
+def test_system_prompt_gets_cache_control_by_default() -> None:
+    """B4: with prompt_cache on (default), the system block is sent in
+    structured form with an ephemeral cache breakpoint, so the stable
+    tools+system prefix is cached across the ticks of an agent loop."""
+    sdk = _FakeSDK(fake_response=_basic_response())
+    client = AnthropicClient(sdk=sdk)  # prompt_cache defaults True
+    client.chat(
+        messages=[Message(role="user", content=[ContentBlock(kind="text", text="hi")])],
+        system="You are a helpful assistant.",
+    )
+    assert sdk.messages.last_kwargs["system"] == [{
+        "type": "text",
+        "text": "You are a helpful assistant.",
+        "cache_control": {"type": "ephemeral"},
+    }]
+
+
+def test_no_cache_control_when_no_system_prompt() -> None:
+    """No system prompt → no system key at all, cached or otherwise."""
+    sdk = _FakeSDK(fake_response=_basic_response())
+    client = AnthropicClient(sdk=sdk)
+    client.chat(
+        messages=[Message(role="user", content=[ContentBlock(kind="text", text="hi")])],
+    )
+    assert "system" not in sdk.messages.last_kwargs
 
 
 def test_request_tool_spec_flows_through() -> None:
