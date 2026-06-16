@@ -376,6 +376,104 @@ def test_history_projection_does_not_mutate_trace() -> None:
 
 
 # ---------------------------------------------------------------------------
+# B7: parallel tool calls replayed in history
+# ---------------------------------------------------------------------------
+
+
+def _append_batch_step(state, calls, results, *, preceding="") -> None:
+    """calls: [(name, args), ...]; results: [(ok, result_or_error), ...]."""
+    from banna_agent.core.types import Action, Observation
+    batch_calls = [{"name": n, "args": a} for n, a in calls]
+    summary = []
+    for (n, _a), (ok, payload) in zip(calls, results):
+        summary.append({
+            "name": n, "ok": ok,
+            "error": None if ok else str(payload),
+            "wall_s": 0.0,
+            "result": payload if ok else None,
+        })
+    state.append_step(
+        Action(kind=ActionKind.TOOL_BATCH,
+               meta={"batch_calls": batch_calls, "preceding_text": preceding}),
+        Observation(ok=all(ok for ok, _ in results),
+                    data={"batch": summary, "n": len(summary)}),
+    )
+
+
+def _blocks_of_kind(msgs, kind):
+    return [b for m in msgs for b in m.content if b.kind == kind]
+
+
+def test_history_replays_tool_batch_calls_and_results() -> None:
+    """A TOOL_BATCH step is replayed as N tool_use + N matching
+    tool_result blocks (B7) — not silently dropped."""
+    state = AgentState(question="q")
+    _append_batch_step(
+        state,
+        calls=[("search", {"query": "a"}), ("search", {"query": "b"})],
+        results=[(True, {"hits": [{"url": "u1"}]}),
+                 (True, {"hits": [{"url": "u2"}]})],
+        preceding="searching both",
+    )
+    msgs = ReActPolicy()._history(state)
+    uses = _blocks_of_kind(msgs, "tool_use")
+    results = _blocks_of_kind(msgs, "tool_result")
+    assert len(uses) == 2
+    assert len(results) == 2
+    # Every tool_result id has a matching tool_use id (provider requirement).
+    assert {b.id for b in uses} == {b.id for b in results}
+    # Preceding chain-of-thought is preserved.
+    assert any(b.kind == "text" and "searching both" in (b.text or "")
+               for m in msgs for b in m.content)
+
+
+def test_history_tool_batch_error_subcall_marked() -> None:
+    state = AgentState(question="q")
+    _append_batch_step(
+        state,
+        calls=[("search", {"query": "a"}), ("read_url", {"url": "x"})],
+        results=[(True, {"hits": []}), (False, "boom")],
+    )
+    msgs = ReActPolicy()._history(state)
+    results = _blocks_of_kind(msgs, "tool_result")
+    errored = [b for b in results if b.is_error]
+    assert len(errored) == 1
+    assert "boom" in str(errored[0].result)
+
+
+def test_history_projects_old_tool_batch_but_keeps_last_full() -> None:
+    """An older batch's bulky results are trimmed; a later tool step keeps
+    the batch from being the most-recent, so it gets projected."""
+    state = AgentState(question="q")
+    big = "Q" * 5000
+    _append_batch_step(
+        state,
+        calls=[("read_url", {"url": "x"})],
+        results=[(True, {"text": big, "evidence_id": "ev_b"})],
+    )
+    # A later single tool step makes the batch "historical".
+    _append_tool_step(state, text="newest", evidence_id="ev_new")
+    msgs = ReActPolicy(history_snippet_chars=1500)._history(state)
+    results = _blocks_of_kind(msgs, "tool_result")
+    batch_text = results[0].result.get("text", "")
+    assert len(batch_text) < len(big)
+    assert "trimmed" in batch_text
+
+
+def test_history_tool_batch_not_projected_when_disabled() -> None:
+    state = AgentState(question="q")
+    big = "Q" * 5000
+    _append_batch_step(
+        state, calls=[("read_url", {"url": "x"})],
+        results=[(True, {"text": big, "evidence_id": "ev_b"})],
+    )
+    _append_tool_step(state, text="newest", evidence_id="ev_new")
+    msgs = ReActPolicy(project_history=False)._history(state)
+    results = _blocks_of_kind(msgs, "tool_result")
+    assert results[0].result["text"] == big
+
+
+# ---------------------------------------------------------------------------
 # B6: coverage-aware commit pressure
 # ---------------------------------------------------------------------------
 

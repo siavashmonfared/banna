@@ -7,9 +7,10 @@ ReAct's decision rule is:
   1. Convert the current AgentState into a prompt (question + trace
      summary + tool results).
   2. Call the LLM, declaring the available tools.
-  3. If the LLM returned tool_calls, emit the *first* tool_call as our
-     Action. (Parallel tool-use is possible but deferred; it's a
-     scheduling problem, not a ReAct one.)
+  3. If the LLM returned tool_calls: emit a single TOOL_CALL when there's
+     one, or a TOOL_BATCH when the model emitted ≥2 in the same reply (B7 —
+     parallel tool-use, dispatched concurrently by the driver and replayed
+     as parallel tool_use/tool_result blocks in `_history`).
   4. Otherwise, if the LLM returned text, emit FINAL_ANSWER with the
      text.
   5. On any parse failure, emit a THINK action with the error text and
@@ -431,7 +432,7 @@ class ReActPolicy:
         last_tool_idx = -1
         if self.project_history:
             for step in state.trace.steps:
-                if step.action.kind == ActionKind.TOOL_CALL:
+                if step.action.kind in (ActionKind.TOOL_CALL, ActionKind.TOOL_BATCH):
                     last_tool_idx = step.idx
         for step in state.trace.steps:
             act = step.action
@@ -484,6 +485,56 @@ class ReActPolicy:
                         is_error=not obs.ok,
                     )],
                 ))
+            elif act.kind == ActionKind.TOOL_BATCH:
+                # B7: replay parallel tool calls. The model emitted ≥2
+                # tool_use blocks in one turn; we dispatched them as a batch.
+                # Reconstruct that as ONE assistant turn with N tool_use
+                # blocks and ONE user turn with N matching tool_result blocks
+                # (parallel-tool-use shape both providers understand). Without
+                # this branch the whole batch — calls AND results — is dropped
+                # from history and the model re-requests what it already ran.
+                meta = act.meta or {}
+                batch_calls = meta.get("batch_calls") or []
+                data = obs.data if isinstance(obs.data, dict) else {}
+                summary = data.get("batch") or []
+                n = max(len(batch_calls), len(summary))
+                project = self.project_history and step.idx != last_tool_idx
+
+                use_blocks: list[ContentBlock] = []
+                preceding = meta.get("preceding_text") or ""
+                if preceding.strip():
+                    use_blocks.append(ContentBlock(kind="text", text=preceding))
+                result_blocks: list[ContentBlock] = []
+                for i in range(n):
+                    bc = batch_calls[i] if i < len(batch_calls) else {}
+                    sub = summary[i] if i < len(summary) else {}
+                    name = bc.get("name") or sub.get("name") or ""
+                    tu_id = f"step_{step.idx}_{i}"
+                    use_blocks.append(ContentBlock(
+                        kind="tool_use",
+                        id=tu_id,
+                        name=name,
+                        arguments=dict(bc.get("args") or {}),
+                    ))
+                    ok = bool(sub.get("ok", True))
+                    if ok:
+                        payload = sub.get("result")
+                        if project:
+                            payload = self._project_payload(payload)
+                    else:
+                        payload = {"error": sub.get("error") or "tool failed"}
+                    result_blocks.append(ContentBlock(
+                        kind="tool_result",
+                        id=tu_id,
+                        name=name,
+                        result=payload,
+                        is_error=not ok,
+                    ))
+                # Defensive: a tool_use with no matching tool_result (or vice
+                # versa) is a provider-level error. Only emit when balanced.
+                if use_blocks and result_blocks:
+                    msgs.append(Message(role="assistant", content=use_blocks))
+                    msgs.append(Message(role="user", content=result_blocks))
             elif act.kind == ActionKind.ASK_USER:
                 # Replay the clarifying exchange so the model SEES its own
                 # question and the user's answer. Without this the Q&A is
