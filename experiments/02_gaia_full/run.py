@@ -151,6 +151,7 @@ def main() -> int:
     from banna_agent.tools.list_files import make_list_files_tool
     from banna_agent.tools.plan import make_plan_tool
     from banna_agent.tools.python_sandbox import make_python_sandbox_tool
+    from banna_agent.tools.recall import make_recall_tool
     from banna_agent.tools.search import make_search_tool
     from banna_agent.tools.url_reader import make_url_reader_tool
 
@@ -193,6 +194,7 @@ def main() -> int:
         make_python_sandbox_tool(),
         make_plan_tool(),
         make_final_answer_tool(),
+        make_recall_tool(),
     ]
     if not args.no_browser:
         from banna_agent.tools.browser import make_browser_tools

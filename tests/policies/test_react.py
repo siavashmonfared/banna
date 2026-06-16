@@ -297,6 +297,85 @@ def test_history_nudge_skipped_when_max_steps_zero() -> None:
 
 
 # ---------------------------------------------------------------------------
+# B1: bounded history projection
+# ---------------------------------------------------------------------------
+
+
+def _append_tool_step(state: AgentState, *, text: str, evidence_id: str) -> None:
+    from banna_agent.core.types import Action, Observation
+    state.append_step(
+        Action(kind=ActionKind.TOOL_CALL, tool_name="read_url",
+               tool_args={"url": "http://x"}),
+        Observation(ok=True, data={"url": "http://x", "title": "T",
+                                   "text": text, "evidence_id": evidence_id}),
+    )
+
+
+def _tool_result_texts(msgs) -> list[str]:
+    """Extract every tool_result payload's `text` field, in order."""
+    out = []
+    for m in msgs:
+        for b in m.content:
+            if b.kind == "tool_result" and isinstance(b.result, dict):
+                out.append(b.result.get("text", ""))
+    return out
+
+
+def test_history_projects_old_observations_but_keeps_last_full() -> None:
+    """Older tool results are trimmed to a snippet; the most recent one
+    is replayed verbatim so the model can act on it."""
+    state = AgentState(question="q")
+    big_old = "A" * 5000
+    big_new = "B" * 5000
+    _append_tool_step(state, text=big_old, evidence_id="ev_old")
+    _append_tool_step(state, text=big_new, evidence_id="ev_new")
+
+    msgs = ReActPolicy(history_snippet_chars=1500)._history(state)
+    texts = _tool_result_texts(msgs)
+    assert len(texts) == 2
+    old, new = texts
+    # Old one is trimmed and points at recall_evidence with its id.
+    assert len(old) < len(big_old)
+    assert "trimmed" in old
+    assert "ev_old" in old
+    # Newest one is untouched.
+    assert new == big_new
+
+
+def test_history_projection_disabled_replays_full() -> None:
+    """With project_history=False, every observation replays verbatim
+    (pre-B1 behavior, the ablation/rollback lever)."""
+    state = AgentState(question="q")
+    big = "A" * 5000
+    _append_tool_step(state, text=big, evidence_id="ev_old")
+    _append_tool_step(state, text="B" * 5000, evidence_id="ev_new")
+
+    msgs = ReActPolicy(project_history=False)._history(state)
+    texts = _tool_result_texts(msgs)
+    assert texts[0] == big  # old one NOT trimmed
+
+
+def test_history_projection_leaves_short_fields_alone() -> None:
+    """Fields below the snippet cap pass through untouched."""
+    state = AgentState(question="q")
+    _append_tool_step(state, text="short", evidence_id="ev_old")
+    _append_tool_step(state, text="also short", evidence_id="ev_new")
+    msgs = ReActPolicy(history_snippet_chars=1500)._history(state)
+    texts = _tool_result_texts(msgs)
+    assert texts[0] == "short"
+
+
+def test_history_projection_does_not_mutate_trace() -> None:
+    """Projection only affects the LLM copy; the trace keeps full text."""
+    state = AgentState(question="q")
+    big = "A" * 5000
+    _append_tool_step(state, text=big, evidence_id="ev_old")
+    _append_tool_step(state, text="B" * 5000, evidence_id="ev_new")
+    ReActPolicy(history_snippet_chars=1500)._history(state)
+    assert state.trace.steps[0].observation.data["text"] == big
+
+
+# ---------------------------------------------------------------------------
 # Phase 3: commit_required escalation — force tool_choice after one nudge,
 # bail with preceding text after two.
 # ---------------------------------------------------------------------------

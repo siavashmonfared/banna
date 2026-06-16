@@ -170,7 +170,13 @@ DEFAULT_SYSTEM_PROMPT = (
     "  • Hedging with multiple variants instead of picking one and "
     "committing.\n"
     "  • Stalling on minor precision when the question only needs an "
-    "order-of-magnitude or an approximate value."
+    "order-of-magnitude or an approximate value.\n\n"
+    "Context note: to save space, the FULL text of a page or file you "
+    "fetched is kept only for your MOST RECENT tool result; older results "
+    "are shown trimmed to a snippet ending in a '… trimmed' marker. If you "
+    "need the full text of an earlier result back, call "
+    "`recall_evidence` with the evidence_id shown in that marker — it "
+    "returns the complete text with no re-download."
 )
 
 
@@ -298,6 +304,22 @@ class ReActPolicy:
     # pre-patch behavior.
     action_intent_guard: bool = True
 
+    # --- B1: bounded history projection ------------------------------------
+    # When True (default), historical tool observations are replayed into the
+    # LLM message history as a COMPACT projection — long text fields are
+    # trimmed to `history_snippet_chars` with a marker pointing at the
+    # evidence_id the model can pass to `recall_evidence` for the full text.
+    # The MOST RECENT tool observation is always kept full (the model usually
+    # needs the last result verbatim to act on it). This kills the quadratic
+    # token blow-up where step N re-sends every prior page in full. The full
+    # text is never lost — it stays in the trace and is reachable via
+    # recall_evidence. Set False to restore verbatim full replay (ablation /
+    # rollback lever; doubles as a telemetry field).
+    project_history: bool = True
+    # Per-field char cap for trimmed historical text. ~1.5k chars (~375
+    # tokens) keeps a usable snippet while shedding the boilerplate bulk.
+    history_snippet_chars: int = 1500
+
     # --- internal: message history reconstruction --------------------------
 
     def _history(self, state: AgentState) -> list[Message]:
@@ -311,6 +333,14 @@ class ReActPolicy:
         msgs: list[Message] = [
             Message(role="user", content=[ContentBlock(kind="text", text=state.question)])
         ]
+        # B1: index of the last tool step — its observation is kept full
+        # (the model usually needs the latest result verbatim to act on it);
+        # every earlier tool observation is projected down to a snippet.
+        last_tool_idx = -1
+        if self.project_history:
+            for step in state.trace.steps:
+                if step.action.kind == ActionKind.TOOL_CALL:
+                    last_tool_idx = step.idx
         for step in state.trace.steps:
             act = step.action
             obs = step.observation
@@ -346,6 +376,10 @@ class ReActPolicy:
                 # user's tool_result turn
                 if obs.ok:
                     payload = obs.data
+                    # B1: project historical observations to a snippet, but
+                    # keep the most recent tool result full.
+                    if self.project_history and step.idx != last_tool_idx:
+                        payload = self._project_payload(payload)
                 else:
                     payload = {"error": obs.error or "tool failed"}
                 msgs.append(Message(
@@ -395,6 +429,43 @@ class ReActPolicy:
         if nudge is not None:
             msgs.append(nudge)
         return msgs
+
+    def _project_payload(self, payload: Any) -> Any:
+        """B1: shrink a historical tool result for replay.
+
+        Walks the result dict and trims any string longer than
+        `history_snippet_chars` down to a snippet, appending a marker that
+        tells the model how many chars were dropped and how to get them back
+        (`recall_evidence` keyed on the result's evidence_id). Non-dict
+        payloads and short fields pass through untouched. The trace itself is
+        never mutated — this only affects the copy sent to the LLM.
+        """
+        cap = self.history_snippet_chars
+        if cap <= 0:
+            return payload
+        if not isinstance(payload, dict):
+            if isinstance(payload, str) and len(payload) > cap:
+                return payload[:cap] + f"\n… [+{len(payload) - cap} chars trimmed]"
+            return payload
+
+        eid = payload.get("evidence_id")
+        recall_hint = (
+            f"; call recall_evidence(evidence_id='{eid}') for the full text"
+            if eid else ""
+        )
+        out: dict[str, Any] = {}
+        for k, v in payload.items():
+            if isinstance(v, str) and len(v) > cap:
+                dropped = len(v) - cap
+                out[k] = (
+                    v[:cap]
+                    + f"\n… [+{dropped} chars trimmed to save context{recall_hint}]"
+                )
+            elif isinstance(v, list) and len(v) > 30:
+                out[k] = v[:30] + [f"… [+{len(v) - 30} more items trimmed]"]
+            else:
+                out[k] = v
+        return out
 
     def _step_pressure_message(self, state: AgentState) -> Message | None:
         max_steps = state.budget.max_steps

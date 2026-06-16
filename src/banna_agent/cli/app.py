@@ -40,6 +40,7 @@ from ..tools.list_files import make_list_files_tool
 from ..tools.memory import make_memory_tool
 from ..tools.plan import make_plan_tool
 from ..tools.python_sandbox import make_python_sandbox_tool
+from ..tools.recall import make_recall_tool
 from ..tools.run_shell import make_run_shell_tool
 from ..tools.search import make_search_tool
 from ..tools.url_reader import make_url_reader_tool
@@ -156,6 +157,7 @@ class MyAgentApp:
             make_python_sandbox_tool(sandbox=self.sandbox, **py_extra),
             make_list_files_tool(),
             make_grep_tool(),
+            make_recall_tool(),
         ]
         if not self.no_plan:
             tool_list.append(make_plan_tool())

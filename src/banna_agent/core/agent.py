@@ -656,6 +656,32 @@ def run_policy(
         policy=getattr(policy, "name", type(policy).__name__),
     )
 
+    # Publish this run's state so state-aware tools (e.g. recall_evidence)
+    # can read the live trace. Reset on exit so nested runs restore cleanly.
+    from .run_context import reset_current_state, set_current_state
+    _state_token = set_current_state(state)
+    try:
+        return _run_policy_loop(
+            state, policy, llm=llm, tools=tools, log=log,
+            compactor=compactor, user_io=user_io, tracker=tracker,
+        )
+    finally:
+        reset_current_state(_state_token)
+
+
+def _run_policy_loop(
+    state: AgentState,
+    policy: Any,
+    *,
+    llm: LLMClient,
+    tools: ToolRegistry,
+    log: EventLog | None,
+    compactor: Any,
+    user_io: UserIO | None,
+    tracker: "BudgetTracker",
+) -> AgentState:
+    """The inner loop of :func:`run_policy`, split out so the current-state
+    contextvar can be set/reset around it with a single try/finally."""
     while True:
         reason = tracker.check()
         if reason != BudgetReason.OK:
