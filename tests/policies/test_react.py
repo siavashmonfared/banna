@@ -376,6 +376,118 @@ def test_history_projection_does_not_mutate_trace() -> None:
 
 
 # ---------------------------------------------------------------------------
+# B6: coverage-aware commit pressure
+# ---------------------------------------------------------------------------
+
+
+def test_enumerable_targets_year_range() -> None:
+    from banna_agent.policies.react import _enumerable_targets
+    t = _enumerable_targets("What was revenue from 2018 to 2021?")
+    assert t["years"] == ["2018", "2019", "2020", "2021"]
+    assert t["count"] is None
+
+
+def test_enumerable_targets_hyphen_range() -> None:
+    from banna_agent.policies.react import _enumerable_targets
+    assert _enumerable_targets("ARPU 2019-2020 trend")["years"] == ["2019", "2020"]
+
+
+def test_enumerable_targets_single_year_not_enumerable() -> None:
+    from banna_agent.policies.react import _enumerable_targets
+    assert _enumerable_targets("what happened in 2020?")["years"] == []
+
+
+def test_enumerable_targets_bare_list_of_three_years() -> None:
+    from banna_agent.policies.react import _enumerable_targets
+    # Three distinct bare years (no range connector) → enumerable.
+    t = _enumerable_targets("population in 2000, 2010, 2020 census")
+    assert t["years"] == ["2000", "2010", "2020"]
+
+
+def test_enumerable_targets_two_years_need_per_year_cue() -> None:
+    from banna_agent.policies.react import _enumerable_targets
+    # Two years, no range connector, no cue → not enumerable.
+    assert _enumerable_targets("compare 2001 census with 2011 data")["years"] == []
+    # Two years plus an explicit per-year cue → enumerable.
+    assert _enumerable_targets(
+        "population for each year: 2001 census, 2011 data")["years"] == ["2001", "2011"]
+
+
+def test_enumerable_targets_count() -> None:
+    from banna_agent.policies.react import _enumerable_targets
+    assert _enumerable_targets("list the three largest cities")["count"] == 3
+    assert _enumerable_targets("name 5 albums")["count"] == 5
+    assert _enumerable_targets("who is the president?")["count"] is None
+
+
+def test_enumerable_targets_none_for_plain_question() -> None:
+    from banna_agent.policies.react import _enumerable_targets
+    t = _enumerable_targets("What is the capital of France?")
+    assert t == {"years": [], "count": None}
+
+
+def _nudge_text(policy: ReActPolicy, state: AgentState) -> str:
+    msg = policy._step_pressure_message(state)
+    assert msg is not None
+    return msg.content[0].text
+
+
+def test_coverage_nudge_fires_for_multipart_year_question() -> None:
+    from banna_agent.core.types import Budget
+    state = AgentState(question="Revenue from 2018 to 2021?",
+                       budget=Budget(max_steps=10))
+    state.budget.steps_used = 7  # 70% — between threshold and hard ceiling
+    text = _nudge_text(ReActPolicy(), state)
+    assert "MULTI-PART" in text
+    assert "2018" in text  # nothing gathered → all years listed missing
+
+
+def test_coverage_nudge_names_only_missing_years() -> None:
+    from banna_agent.core.types import Action, Budget, Observation
+    state = AgentState(question="Revenue from 2018 to 2020?",
+                       budget=Budget(max_steps=10))
+    # Gathered evidence already mentions 2018 and 2019, not 2020.
+    state.append_step(
+        Action(kind=ActionKind.TOOL_CALL, tool_name="read_url",
+               tool_args={"url": "x"}),
+        Observation(ok=True, data={"text": "rev 2018 was 5; 2019 was 6"}),
+    )
+    state.budget.steps_used = 7
+    text = _nudge_text(ReActPolicy(), state)
+    assert "2020" in text
+    assert "2018, 2019" not in text  # already covered, not relisted as missing
+
+
+def test_coverage_nudge_reverts_to_blunt_above_hard_ceiling() -> None:
+    from banna_agent.core.types import Budget
+    state = AgentState(question="Revenue from 2018 to 2021?",
+                       budget=Budget(max_steps=10))
+    state.budget.steps_used = 9  # 90% — at hard ceiling
+    text = _nudge_text(ReActPolicy(), state)
+    assert "MULTI-PART" not in text
+    assert "Stop calling tools and commit" in text
+
+
+def test_coverage_aware_pressure_disabled_uses_blunt_nudge() -> None:
+    from banna_agent.core.types import Budget
+    state = AgentState(question="Revenue from 2018 to 2021?",
+                       budget=Budget(max_steps=10))
+    state.budget.steps_used = 7
+    text = _nudge_text(ReActPolicy(coverage_aware_pressure=False), state)
+    assert "MULTI-PART" not in text
+    assert "Stop calling tools and commit" in text
+
+
+def test_single_answer_question_uses_blunt_nudge() -> None:
+    from banna_agent.core.types import Budget
+    state = AgentState(question="What is the capital of France?",
+                       budget=Budget(max_steps=10))
+    state.budget.steps_used = 7
+    text = _nudge_text(ReActPolicy(), state)
+    assert "Stop calling tools and commit" in text
+
+
+# ---------------------------------------------------------------------------
 # Phase 3: commit_required escalation — force tool_choice after one nudge,
 # bail with preceding text after two.
 # ---------------------------------------------------------------------------

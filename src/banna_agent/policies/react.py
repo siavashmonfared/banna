@@ -266,6 +266,84 @@ def _reply_looks_like_code_explanation(text: str) -> bool:
     return len(code_lines) >= 2
 
 
+# ---------------------------------------------------------------------------
+# B6: enumerable-target detection for coverage-aware commit pressure
+# ---------------------------------------------------------------------------
+#
+# The blunt "commit now" nudge (see _step_pressure_message) systematically
+# truncates MULTI-PART questions — "revenue for 2018 through 2023" (6 numbers),
+# "name the three largest" (3 items) — because it fires before all parts are
+# gathered. We can't reuse CoverageVerifier (it grades claim→evidence support
+# AFTER commit, not question coverage), so we detect enumerable targets from
+# the question text and reshape the nudge to preserve completeness.
+
+import re as _re
+
+# A year token, 1900–2099. Bare \d{4} would match page counts / IDs.
+_YEAR = r"(?:19|20)\d{2}"
+# An explicit year RANGE: "2018-2023", "from 2018 to 2023", "between 2018 and
+# 2023", "2018 through 2023". Endpoints captured; expanded to the full set.
+_YEAR_RANGE_RE = _re.compile(
+    rf"\b({_YEAR})\s*(?:-|–|—|to|through|thru|until|and)\s*({_YEAR})\b",
+    _re.IGNORECASE,
+)
+_YEAR_RE = _re.compile(rf"\b{_YEAR}\b")
+# Cues that a bare list of years is meant enumerably (answer each one).
+_PER_YEAR_CUE = _re.compile(
+    r"\b(each|every|per|all|respectively|for the years?)\b", _re.IGNORECASE)
+
+# Number words → int, for explicit-count questions ("list three", "top 5").
+_NUM_WORDS = {
+    "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+    "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+}
+_COUNT_RE = _re.compile(
+    r"\b(?:list|name|give|find|identify|provide|top|first|"
+    r"the)\s+(\d{1,2}|two|three|four|five|six|seven|eight|nine|ten)\b",
+    _re.IGNORECASE,
+)
+
+
+def _enumerable_targets(question: str) -> dict[str, Any]:
+    """Detect enumerable sub-parts in a question.
+
+    Returns ``{"years": [..], "count": int|None}``. ``years`` is a sorted
+    list of the individual year strings the answer must cover (from an
+    explicit range, or a bare list of ≥3 years, or ≥2 years plus a
+    per-year cue). ``count`` is N when the question explicitly asks for N
+    items (and N ≥ 2). Both empty/None when nothing enumerable is found.
+    Conservative by design: a false negative just keeps today's behavior.
+    """
+    if not question:
+        return {"years": [], "count": None}
+    q = question
+
+    years: list[str] = []
+    m = _YEAR_RANGE_RE.search(q)
+    if m:
+        a, b = int(m.group(1)), int(m.group(2))
+        lo, hi = min(a, b), max(a, b)
+        # Guard against absurd spans (a stray pair of years far apart).
+        if 0 < hi - lo <= 30:
+            years = [str(y) for y in range(lo, hi + 1)]
+    if not years:
+        found = sorted(set(_YEAR_RE.findall(q)))
+        # A bare list is "enumerable" only with a strong signal: ≥3 distinct
+        # years, or ≥2 plus an explicit per-year cue.
+        if len(found) >= 3 or (len(found) >= 2 and _PER_YEAR_CUE.search(q)):
+            years = found
+
+    count: int | None = None
+    cm = _COUNT_RE.search(q)
+    if cm:
+        tok = cm.group(1).lower()
+        n = int(tok) if tok.isdigit() else _NUM_WORDS.get(tok)
+        if n is not None and 2 <= n <= 20:
+            count = n
+
+    return {"years": years, "count": count}
+
+
 @dataclass
 class ReActPolicy:
     """The baseline ReAct Policy. Provider-agnostic.
@@ -294,6 +372,20 @@ class ReActPolicy:
     # 0.6 = nudge appears once you've used 60% of your step budget.
     # Set to 0 or > 1 to disable.
     commit_pressure_threshold: float = 0.6
+
+    # --- B6: coverage-aware commit pressure --------------------------------
+    # When True (default), the commit-pressure nudge becomes completeness-
+    # aware for ENUMERABLE questions (a year range/list, or an explicit count
+    # like "name the three…"). Instead of the blunt "stop now, commit", it
+    # reminds the model to cover every part and to gather only the still-
+    # missing ones first. This fixes premature commitment on multi-part
+    # questions (revenue across 6 years, 3 companies) without changing
+    # single-answer behavior. Set False for the blunt nudge always (ablation).
+    coverage_aware_pressure: bool = True
+    # Hard ceiling: once this fraction of the step budget is spent, fall back
+    # to the blunt "commit now" nudge regardless of coverage, so the run
+    # ALWAYS commits eventually and the heuristic can never stall it.
+    coverage_hard_ceiling: float = 0.9
 
     # If True (default), guard against the failure mode where the user
     # asks for a side effect (write a file / run a script) and the
@@ -498,17 +590,93 @@ class ReActPolicy:
                 else:
                     n_calls += len((s.action.meta or {}).get("batch_calls") or [])
         used = max(state.budget.steps_used, n_calls)
-        if used / max_steps < thr:
+        frac = used / max_steps
+        if frac < thr:
             return None
         remaining = max(0, max_steps - used)
-        text = (
+        text = self._commit_nudge_text(state, used, max_steps, remaining, frac)
+        return Message(role="user", content=[ContentBlock(kind="text", text=text)])
+
+    # The blunt "stop now, commit" nudge — used for single-answer questions
+    # and as the hard-ceiling fallback for enumerable ones.
+    _BLUNT_NUDGE = (
+        "Stop calling tools and commit to the best answer you can "
+        "produce from the data already gathered. Do not search for "
+        "additional confirmation — return PLAIN TEXT with the answer."
+    )
+
+    def _commit_nudge_text(
+        self, state: AgentState, used: int, max_steps: int,
+        remaining: int, frac: float,
+    ) -> str:
+        prefix = (
             f"NOTE FROM THE RUNTIME: you've already used {used} of "
             f"{max_steps} step budget ({remaining} remaining). "
-            "Stop calling tools and commit to the best answer you can "
-            "produce from the data already gathered. Do not search for "
-            "additional confirmation — return PLAIN TEXT with the answer."
         )
-        return Message(role="user", content=[ContentBlock(kind="text", text=text)])
+        # B6: below the hard ceiling, reshape the nudge for enumerable
+        # (multi-part) questions so pressure doesn't truncate the answer.
+        if self.coverage_aware_pressure and frac < self.coverage_hard_ceiling:
+            body = self._coverage_nudge_body(state)
+            if body is not None:
+                return prefix + body
+        return prefix + self._BLUNT_NUDGE
+
+    def _coverage_nudge_body(self, state: AgentState) -> str | None:
+        """Completeness-preserving nudge body for enumerable questions, or
+        None if the question has no detectable enumerable targets."""
+        targets = _enumerable_targets(state.question)
+        years = targets["years"]
+        count = targets["count"]
+        if not years and not count:
+            return None
+
+        parts: list[str] = []
+        if years:
+            # Name the years still absent from everything gathered so far, so
+            # the model spends its last steps on the gaps, not re-confirmation.
+            corpus = self._gathered_corpus(state)
+            missing = [y for y in years if y not in corpus]
+            span = f"{years[0]}–{years[-1]}" if len(years) > 1 else years[0]
+            if missing:
+                parts.append(
+                    f"This question is MULTI-PART: it needs every year in "
+                    f"{span}. You have not yet gathered data for: "
+                    f"{', '.join(missing)}. Get ONLY those, then commit with "
+                    f"ALL {len(years)} years in one answer."
+                )
+            else:
+                parts.append(
+                    f"This question needs every year in {span} "
+                    f"({len(years)} values). Commit now with ALL of them in "
+                    f"one answer — do not stop after a subset."
+                )
+        if count:
+            parts.append(
+                f"This question asks for {count} items. Make sure your answer "
+                f"lists all {count} — do not commit a partial list."
+            )
+        parts.append(
+            "Do not run further confirmation searches; spend any remaining "
+            "steps only on missing parts, then return PLAIN TEXT."
+        )
+        return " ".join(parts)
+
+    def _gathered_corpus(self, state: AgentState) -> str:
+        """Concatenate the text the run has collected (evidence + tool
+        observation string fields) for cheap substring coverage checks."""
+        chunks: list[str] = []
+        for ev in state.evidence:
+            if ev.content:
+                chunks.append(ev.content)
+        for step in state.trace.steps:
+            data = step.observation.data
+            if isinstance(data, dict):
+                for v in data.values():
+                    if isinstance(v, str):
+                        chunks.append(v)
+            if step.observation.text:
+                chunks.append(step.observation.text)
+        return "\n".join(chunks)
 
     # --- Policy.propose ----------------------------------------------------
 
