@@ -162,7 +162,7 @@ def render_brand_title(path: str | None = None) -> str:
     The green bullet matches the spec's agent-label glyph; the full 4-row
     mascot is rendered separately above the panel.
     """
-    dot = f"[{SOLARIZED['green']}]●[/]"
+    dot = "[scout.accent]●[/scout.accent]"   # themed: green slot of the active palette
     name = f"[scout.text]{BRAND}[/scout.text]"
     if path:
         return f"{dot} {name} [scout.muted]— {path}[/scout.muted]"
@@ -384,63 +384,15 @@ SPINNER_INTERVAL_MS = 90
 
 
 def scout_theme() -> Theme:
-    """Return the Rich Theme that paints the CLI in scout-theme colors.
+    """Return the Rich Theme that paints the CLI in the *active* theme.
 
-    Remaps the bare color names already in use (`[cyan]`, `[green]` …) so
-    every panel, table title, status indicator picks up Solarized hex
-    automatically. Also registers `scout.*` styles for code that wants
-    to opt in explicitly.
+    The style map lives in `themes._theme_from_palette`; which palette
+    fills it is chosen via `themes.set_active` (from `[ui] theme` in
+    config.toml or the launch TUI). Defaults to Solarized Light, so
+    every caller that predates theming is unchanged.
     """
-    s = SOLARIZED
-    return Theme({
-        # ---- remap bare color names so existing markup just works ------
-        "cyan":     s["cyan"],
-        "green":    s["green"],
-        "yellow":   s["yellow"],
-        "red":      s["red"],
-        "magenta":  s["magenta"],
-        "blue":     s["blue"],
-        "white":    s["base01"],          # readable on a light terminal
-        "dim":      s["base1"],           # softer than default dim
-
-        # ---- bold variants (preserve `bold cyan` etc.) -----------------
-        "bold cyan":    f"bold {s['cyan']}",
-        "bold green":   f"bold {s['green']}",
-        "bold yellow":  f"bold {s['yellow']}",
-        "bold red":     f"bold {s['red']}",
-        "bold magenta": f"bold {s['magenta']}",
-        "bold blue":    f"bold {s['blue']}",
-
-        # ---- scout.* / banna.* semantic aliases (from §03 spec) -------
-        "scout.bg":         s["base3"],
-        "scout.panel":      s["base2"],
-        "scout.border":     s["base1"],          # frame strokes are base1
-        "scout.muted":      s["base1"],
-        "scout.text":       s["base01"],         # agent prose
-        "scout.body":       s["base00"],         # plain body
-        "scout.you":        f"bold {s['orange']}",  # user prompt label + caret
-        "scout.you.caret":  s["orange"],
-        "scout.agent":      f"bold {s['green']}",   # ● banna label
-        "scout.reasoning":  s["violet"],
-        "scout.link":       s["blue"],           # filenames, paths, args
-        "scout.inflight":   s["yellow"],         # spinner
-        "scout.ok":         s["green"],
-        "scout.err":        s["red"],
-        "scout.warn":       s["yellow"],
-        "scout.title":      f"bold {s['green']}",
-        "scout.accent":     s["green"],
-        "scout.info":       s["cyan"],
-        "scout.prompt":     PROMPT_ACCENT_STYLE,
-        "scout.border.dim": s["base1"],
-
-        # Banna aliases — same things, friendlier names.
-        "banna.you":       f"bold {s['orange']}",
-        "banna.agent":     f"bold {s['green']}",
-        "banna.frame":     s["base1"],
-        "banna.link":      s["blue"],
-        "banna.reasoning": s["violet"],
-        "banna.spinner":   s["yellow"],
-    })
+    from .themes import build_theme
+    return build_theme()
 
 
 def render_input_box_top(width: int) -> str:

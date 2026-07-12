@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import sys
 from typing import Any, Callable
 
 from rich.panel import Panel
@@ -37,61 +38,14 @@ POLICY_NAMES = (
 
 # Curated per-provider model lists for `/model` interactive picker.
 # Ollama is queried live via /api/tags; everything else is a hand-kept
-# shortlist. Users can always type a name not in the list.
+# shortlist maintained in model_catalog.py (shared with the launch TUI
+# and the first-run wizard). Users can always type a name not in the
+# list.
+from .model_catalog import PROVIDER_ORDER as _CATALOG_PROVIDERS
+from .model_catalog import known_models as _known_models
+
 KNOWN_MODELS: dict[str, tuple[str, ...]] = {
-    "anthropic": (
-        "claude-opus-4-5-20251101",
-        "claude-sonnet-4-5-20250929",
-        "claude-haiku-4-5-20251001",
-    ),
-    "bedrock": (
-        # ---- Claude 4.x (current, US cross-region inference profiles) ----
-        # Inference-profile IDs route across us-east-1 / us-west-2 / etc.
-        # which sidesteps regional capacity issues. Foundation-model IDs
-        # without the `us.` prefix are region-locked; if you need to pin
-        # a region, drop the prefix.
-        "us.anthropic.claude-opus-4-5-20251101-v1:0",
-        "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-        "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-        # ---- Cross-continent "global." inference profiles (where AWS
-        # has published them) — broader failover, slightly higher
-        # latency. Available for newer models.
-        "global.anthropic.claude-opus-4-5-20251101-v1:0",
-        "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
-        "global.anthropic.claude-haiku-4-5-20251001-v1:0",
-        # ---- EU / APAC inference profiles for users outside the US.
-        "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
-        "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
-        "apac.anthropic.claude-sonnet-4-5-20250929-v1:0",
-        "apac.anthropic.claude-haiku-4-5-20251001-v1:0",
-        # ---- Claude 4.0 / 4.1 (still listed on Bedrock for ablation /
-        # back-compat). May not be enabled in every account — check
-        # `aws bedrock list-foundation-models` to confirm.
-        "us.anthropic.claude-opus-4-1-20250805-v1:0",
-        "us.anthropic.claude-sonnet-4-20250514-v1:0",
-        # ---- Claude 3.x family — older, cheaper, broadly available.
-        "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
-        "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
-        "us.anthropic.claude-3-5-haiku-20241022-v1:0",
-        "us.anthropic.claude-3-haiku-20240307-v1:0",
-        # ---- Region-locked foundation IDs (no `us.`/`eu.`/`apac.`/
-        # `global.` prefix). Use these if you've pinned to one region
-        # and don't want cross-region routing.
-        "anthropic.claude-3-5-sonnet-20241022-v2:0",
-        "anthropic.claude-3-5-haiku-20241022-v1:0",
-        "anthropic.claude-3-haiku-20240307-v1:0",
-    ),
-    "openai": (
-        "gpt-5",
-        "gpt-5-mini",
-        "gpt-5-nano",
-        "o4-mini",
-    ),
-    "gemini": (
-        "gemini-2.5-pro",
-        "gemini-2.5-flash",
-    ),
-    "ollama": (),  # populated dynamically
+    p: _known_models(p) for p in _CATALOG_PROVIDERS
 }
 
 
@@ -99,7 +53,8 @@ KNOWN_MODELS: dict[str, tuple[str, ...]] = {
 # /model to detect missing keys before submitting a doomed request.
 # Ollama is keyless. Bedrock uses AWS_REGION + (keys or profile), which
 # is checked at client-construction time and produces its own
-# ProviderError; we don't second-guess it here.
+# ProviderError; we don't second-guess it here. (model_catalog.KEY_VARS
+# is the full accepted-vars map; this keeps the canonical var only.)
 PROVIDER_API_KEY_ENV: dict[str, str] = {
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
@@ -112,6 +67,14 @@ PROVIDER_API_KEY_ENV: dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 
+class _NoRawTerminal(Exception):
+    """The tty can't do raw key input — fall back to the numbered picker."""
+
+
+# Sentinel row appended to arrow-key menus when free-form input is allowed.
+_CUSTOM_ROW = "(type a name…)"
+
+
 def _pick(
     app: Any,
     *,
@@ -120,7 +83,150 @@ def _pick(
     current: str | None,
     allow_custom: bool = False,
 ) -> str | None:
-    """Numbered picker. Returns chosen value, or None to keep current.
+    """Option picker. Returns chosen value, or None to keep current.
+
+    On a TTY this is an arrow-key menu (↑/↓ or j/k move, Enter selects,
+    Esc/q keeps the current value, 1-9 jumps to a row). Piped input, a
+    terminal that can't do raw keys, or a list taller than the screen
+    falls back to the numbered prompt.
+    """
+    if not options and not allow_custom:
+        app.console.print(f"[red]no {label} options available[/red]")
+        return None
+    if options and sys.stdin.isatty() and sys.stdout.isatty():
+        try:
+            return _pick_arrows(app, label=label, options=options,
+                                current=current, allow_custom=allow_custom)
+        except _NoRawTerminal:
+            pass
+    return _pick_numbered(app, label=label, options=options,
+                          current=current, allow_custom=allow_custom)
+
+
+def _read_key(fd: int) -> str:
+    """Read one keypress, coalescing escape sequences (arrows, etc.)."""
+    import select
+
+    ch = os.read(fd, 1).decode("utf-8", "replace")
+    if ch != "\x1b":
+        return ch
+    # Escape: if more bytes follow immediately it's a CSI/SS3 sequence;
+    # a lone ESC (nothing within 50ms) means the Esc key itself.
+    seq = ch
+    while select.select([fd], [], [], 0.05)[0]:
+        c = os.read(fd, 1).decode("utf-8", "replace")
+        seq += c
+        if seq in ("\x1b[", "\x1bO") or c in "0123456789;":
+            continue
+        break
+    return seq
+
+
+def _pick_arrows(
+    app: Any,
+    *,
+    label: str,
+    options: list[str],
+    current: str | None,
+    allow_custom: bool,
+) -> str | None:
+    """Arrow-key menu. Raises _NoRawTerminal if the tty won't cooperate."""
+    try:
+        import termios
+        import tty
+    except ImportError:
+        raise _NoRawTerminal from None
+
+    rows = list(options) + ([_CUSTOM_ROW] if allow_custom else [])
+    # Taller than the screen: windowing isn't worth it for these short
+    # lists — let the numbered prompt handle the odd giant one.
+    if len(rows) + 3 > (app.console.height or 24):
+        raise _NoRawTerminal
+    try:
+        idx = options.index(current)
+    except ValueError:
+        idx = 0
+
+    fd = sys.stdin.fileno()
+    try:
+        saved = termios.tcgetattr(fd)
+    except (termios.error, ValueError, OSError):
+        raise _NoRawTerminal from None
+
+    out = sys.stdout
+    # Re-enable autowrap (DECAWM) in case a TUI left it off, then park
+    # the cursor: the menu repaints in place by moving it back up.
+    out.write("\x1b[?7h\x1b[?25l")
+    out.flush()
+    app.console.print(
+        f"\n[bold]{label}[/bold]  [dim]↑/↓ move · Enter select · Esc keep current[/dim]"
+    )
+
+    def draw(redraw: bool) -> None:
+        if redraw:
+            out.write(f"\x1b[{len(rows)}A")
+            out.flush()
+        for i, opt in enumerate(rows):
+            mark = " [green](current)[/green]" if opt == current else ""
+            name = opt if opt != _CUSTOM_ROW else f"[dim]{opt}[/dim]"
+            if i == idx:
+                line = f"[scout.you]❯[/scout.you] [bold]{name}[/bold]{mark}"
+            else:
+                line = f"  {name}{mark}"
+            out.write("\r\x1b[2K")
+            out.flush()
+            app.console.print(line, no_wrap=True, overflow="ellipsis",
+                              highlight=False)
+
+    chosen: str | None = None
+    try:
+        tty.setcbreak(fd)  # cbreak keeps ISIG: Ctrl-C still interrupts
+        draw(redraw=False)
+        while True:
+            try:
+                key = _read_key(fd)
+            except KeyboardInterrupt:
+                break
+            if key in ("\x1b[A", "\x1bOA", "k"):
+                idx = (idx - 1) % len(rows)
+            elif key in ("\x1b[B", "\x1bOB", "j"):
+                idx = (idx + 1) % len(rows)
+            elif key in ("\r", "\n"):
+                chosen = rows[idx]
+                break
+            elif key in ("\x1b", "q", "\x04"):
+                break
+            elif key.isdigit() and key != "0" and int(key) <= len(rows):
+                idx = int(key) - 1
+            draw(redraw=True)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+        out.write("\x1b[?25h")
+        out.flush()
+
+    if chosen is None:
+        app.console.print("[dim](kept current)[/dim]")
+        return None
+    if chosen == _CUSTOM_ROW:
+        try:
+            raw = input("name: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            app.console.print("\n[dim](cancelled)[/dim]")
+            return None
+        return raw or None
+    return chosen
+
+
+def _pick_numbered(
+    app: Any,
+    *,
+    label: str,
+    options: list[str],
+    current: str | None,
+    allow_custom: bool = False,
+) -> str | None:
+    """Numbered picker (non-TTY fallback). Returns chosen value, or None
+    to keep current.
 
     Accepts:
       - a number (1-based)
@@ -128,9 +234,6 @@ def _pick(
       - a unique prefix (e.g. 'react' matches if 'react' is unique)
       - any free-form string (only when allow_custom=True)
     """
-    if not options and not allow_custom:
-        app.console.print(f"[red]no {label} options available[/red]")
-        return None
 
     app.console.print(f"\n[bold]{label}[/bold]")
     for i, opt in enumerate(options, 1):
@@ -309,7 +412,7 @@ def cmd_help(app: Any, args: list[str]) -> bool:
 
 
 def cmd_model(app: Any, args: list[str]) -> bool:
-    """Pick a model. Bare `/model` shows a numbered list; `/model <name>` jumps."""
+    """Pick a model. Bare `/model` opens an arrow-key picker; `/model <name>` jumps."""
     if args:
         new = args[0]
     else:
@@ -382,7 +485,7 @@ def _ensure_api_key(app: Any, provider: str) -> bool:
 
 
 def cmd_provider(app: Any, args: list[str]) -> bool:
-    """Pick a provider. Bare `/provider` shows a numbered list."""
+    """Pick a provider. Bare `/provider` opens an arrow-key picker."""
     from ..llm.registry import list_providers
 
     if args:
@@ -413,7 +516,7 @@ def cmd_provider(app: Any, args: list[str]) -> bool:
 
 
 def cmd_policy(app: Any, args: list[str]) -> bool:
-    """Pick a policy. Bare `/policy` shows a numbered list."""
+    """Pick a policy. Bare `/policy` opens an arrow-key picker."""
     if args:
         new = args[0]
         if new not in POLICY_NAMES:

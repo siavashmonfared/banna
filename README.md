@@ -28,13 +28,29 @@ Every install path provides a `banna` (and `banna-agent`) executable on your `PA
 
 ## Quickstart
 
-On first run, `banna` launches a one-time setup wizard: choose a provider, supply an API key (or select a local Ollama model), and the choice is saved to `~/.config/banna/`. Subsequent runs use the saved defaults.
+Every launch of `banna` opens a session-setup dashboard (Textual TUI), pre-filled from your saved defaults in `~/.config/banna/config.toml` — press `s` to start with what's shown, or arrow around to change things first:
+
+```
+  Provider      anthropic          ✓ ANTHROPIC_API_KEY (shell env)
+  Model         claude-sonnet-5
+  Policy        react+             react + evidence recall & coverage pressure
+  Budget        15 steps · 300s · $5.00 · ∞ tokens
+  Theme         solarized-light
+  Sandbox       process
+  Temperature   0.7
+  Skills        off
+  n_candidates  3
+
+  ↑↓ move · ←/→ toggle · ↵ edit · s start · d save as default & start · q quit
+```
+
+API keys are searched in your shell env, `./.env`, and `~/.config/banna/.env`; if a provider has no key you can paste one right there (validated with a 1-token call, saved mode 0600) or switch to a local Ollama model. Model pickers list correct, current model ids per provider; Ollama models are listed live and probed for tool-calling support. Numeric fields (budget, temperature) step with ↑/↓ or take typed values.
 
 ```bash
-# First run — the setup wizard launches automatically if no config exists
-banna
+banna                 # launch — dashboard first, then the REPL
+banna --no-setup      # skip the dashboard, start straight into the REPL
 
-# Override saved defaults with flags at any time
+# Flags still override any saved default
 banna --policy react --provider openai --model gpt-5-nano
 ```
 
@@ -64,7 +80,7 @@ $ banna --policy react --provider openai --model gpt-5-nano
 ### Subcommands
 
 ```bash
-banna init                       # re-run the setup wizard
+banna init                       # re-run the plain-text setup wizard (non-TTY fallback)
 banna config get                 # show saved defaults
 banna config set model gpt-4o    # change a single default
 banna providers                  # list configured providers and status

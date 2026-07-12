@@ -23,29 +23,14 @@ from typing import Any
 
 import requests
 
-from .config_store import write_config, write_env
-
+from .config_store import write_config
 
 # Curated short lists per provider — small enough to read at a glance,
 # wide enough to cover "cheap & fast" vs "smart". Users can always
-# override with `--model` later.
-_PROVIDER_MODELS: dict[str, list[tuple[str, str]]] = {
-    "openai": [
-        ("gpt-5-nano", "fastest, cheapest"),
-        ("gpt-4o-mini", "well-balanced"),
-        ("gpt-4o", "most capable"),
-    ],
-    "anthropic": [
-        ("claude-haiku-4-5-20251001", "fastest, cheapest"),
-        ("claude-sonnet-4-6", "well-balanced"),
-        ("claude-opus-4-7", "most capable"),
-    ],
-    "gemini": [
-        ("gemini-2.0-flash", "fastest, cheapest"),
-        ("gemini-2.0-pro", "well-balanced"),
-        ("gemini-2.5-pro", "most capable"),
-    ],
-}
+# override with `--model` later. Maintained in model_catalog.CURATED
+# (shared with the launch TUI and /model picker); imported lazily in
+# _cloud_flow to avoid an import cycle (model_catalog lazily imports
+# this module's validators).
 
 _PROVIDER_KEY_VAR: dict[str, str] = {
     "openai": "OPENAI_API_KEY",
@@ -75,8 +60,9 @@ def _detect_ollama(timeout_s: float = 1.0) -> list[dict[str, Any]] | None:
     Models are dicts with at least `name` (e.g. "llama3.1:8b") and
     usually `size` in bytes.
     """
+    base = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
     try:
-        r = requests.get("http://localhost:11434/api/tags", timeout=timeout_s)
+        r = requests.get(f"{base}/api/tags", timeout=timeout_s)
         if r.status_code != 200:
             return None
         data = r.json()
@@ -273,7 +259,8 @@ def _cloud_flow(provider: str) -> tuple[str, str, str]:
             sys.exit(2)
 
     # Pick a model.
-    options = _PROVIDER_MODELS[provider]
+    from .model_catalog import CURATED
+    options = list(CURATED[provider])
     _say(f"\n  Pick a default model for {provider}:")
     for i, (name, label) in enumerate(options, start=1):
         _say(f"    {i}. {name}    ({label})")
@@ -335,10 +322,11 @@ def run_wizard() -> WizardResult:
     }})
     env_path = None
     if api_key:
-        env_path = write_env({_PROVIDER_KEY_VAR[provider]: api_key})
-        # Also load into the current process so the REPL starts working
-        # immediately without a restart.
-        os.environ[_PROVIDER_KEY_VAR[provider]] = api_key
+        # Writes every accepted var for the provider (gemini gets both
+        # GEMINI_API_KEY and GOOGLE_API_KEY) and loads them into the
+        # current process so the REPL works without a restart.
+        from .model_catalog import save_api_key
+        env_path = save_api_key(provider, api_key)
 
     _say("")
     _say(f"  ✓ saved {config_path}")

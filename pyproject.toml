@@ -39,6 +39,7 @@ dependencies = [
     "pandas>=2.2",
     "pillow>=10.0",
     "rich>=13.7",
+    "textual>=0.80",
 ]
 
 [project.urls]

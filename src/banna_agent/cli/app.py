@@ -547,13 +547,27 @@ class MyAgentApp:
         in `\\001`/`\\002` (RL_PROMPT_*_IGNORE) so readline doesn't
         count them toward the visible prompt width.
         """
-        # Orange (#cb4b16), bold; matches scout.you. \001/\002 mark the
-        # non-printing escape so readline measures prompt width correctly.
-        ORANGE_ON = "\001\x1b[1;38;2;203;75;22m\002"
+        # The caret takes the active theme's "you" accent (orange slot);
+        # mono renders it plain-bold. \001/\002 mark the non-printing
+        # escapes so readline measures prompt width correctly.
+        from .themes import get_active, get_palette
+        if get_active() == "mono":
+            accent_on = "\001\x1b[1m\002"
+        else:
+            hx = get_palette()["orange"].lstrip("#")
+            r, g, b = int(hx[0:2], 16), int(hx[2:4], 16), int(hx[4:6], 16)
+            accent_on = f"\001\x1b[1;38;2;{r};{g};{b}m\002"
         RESET = "\001\x1b[0m\002"
-        prompt = f"{ORANGE_ON}❯{RESET} "
+        prompt = f"{accent_on}❯{RESET} "
         try:
             self.console.print()          # 1 blank line above
+            # Re-enable terminal autowrap (DECAWM) defensively: a TUI
+            # (e.g. the Textual launch screen) that dies without
+            # restoring it leaves the terminal in no-wrap mode, where
+            # readline overwrites the prompt line on long input instead
+            # of wrapping to the next line.
+            sys.stdout.write("\x1b[?7h")
+            sys.stdout.flush()
             line = input(prompt)
             # 3 blank lines of breathing room between turns.
             for _ in range(3):
@@ -645,6 +659,8 @@ class _CliUserIO:
         self.console.print(f"[cyan]? agent asks:[/cyan] {question}")
         self._pause_spinner()
         try:
+            sys.stdout.write("\x1b[?7h")  # autowrap on — long replies must wrap
+            sys.stdout.flush()
             return input("[your reply] > ").strip()
         except (EOFError, KeyboardInterrupt):
             self.console.print("[dim](no reply)[/dim]")
@@ -740,6 +756,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                          "argument shows a picker of recent sessions; "
                          "`--resume <id>` resumes that session directly; "
                          "`--resume last` resumes the most recent.")
+    ap.add_argument("--no-setup", action="store_true",
+                    help="Skip the launch settings TUI and start straight "
+                         "into the REPL with saved/flag values.")
 
     return ap.parse_args(argv)
 
@@ -792,6 +811,35 @@ def _load_dotenv() -> tuple[Path | None, int]:
     return None, 0
 
 
+def _persist_setup(v) -> None:
+    """Save the launch-TUI values as defaults in config.toml.
+
+    Only the sections this owns ([default], [budget], [ui]) are
+    rewritten; [packages] and anything else are preserved.
+    """
+    from .config_store import read_config, write_config
+
+    data = read_config()
+    data["default"] = {
+        "provider": v.provider,
+        "model": v.model,
+        "policy": v.policy,
+        "temperature": v.temperature,
+        "n_candidates": v.n_candidates,
+        "skills": v.skills,
+        "sandbox": v.sandbox,
+    }
+    budget: dict = {"steps": v.budget_steps, "wall_s": v.budget_wall_s}
+    if v.budget_tokens is not None:
+        budget["tokens"] = v.budget_tokens
+    if v.budget_cost_usd is not None:
+        budget["cost_usd"] = v.budget_cost_usd
+    data["budget"] = budget
+    data["ui"] = {"theme": v.theme}
+    path = write_config(data)
+    print(f"saved defaults to {path}", file=sys.stderr)
+
+
 def main(argv: list[str] | None = None) -> int:
     # Subcommand dispatch (banna init / config / providers) before
     # argparse, so legacy `banna --policy X` still works.
@@ -800,24 +848,29 @@ def main(argv: list[str] | None = None) -> int:
     if _sub.is_subcommand(raw):
         return _sub.dispatch(raw)
 
-    # First-run wizard: triggered when `~/.config/banna/config.toml`
-    # doesn't exist AND no provider key is reachable. Users who already
-    # `export OPENAI_API_KEY` in their shell keep working without a
-    # nag; users who pip-installed fresh get the walkthrough.
+    # First-run wizard (non-TTY fallback only): triggered when
+    # `~/.config/banna/config.toml` doesn't exist AND no provider key is
+    # reachable. On a TTY the launch TUI below subsumes it — it handles
+    # missing keys itself.
     from .config_store import is_first_run, read_config
 
     dotenv_path, dotenv_n = _load_dotenv()
-    cfg_default: dict = (read_config().get("default") or {}) if not is_first_run() else {}
+    cfg = read_config() if not is_first_run() else {}
+    cfg_default: dict = cfg.get("default") or {}
+    cfg_budget: dict = cfg.get("budget") or {}
+    cfg_ui: dict = cfg.get("ui") or {}
 
-    if is_first_run() and not any(
+    args = _parse_args(argv)
+    is_tty = sys.stdin.isatty() and sys.stdout.isatty()
+    use_tui = is_tty and not args.no_setup
+
+    if not use_tui and is_first_run() and not any(
         os.environ.get(v) for v in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY")
     ):
         from .setup_wizard import run_wizard
         wiz = run_wizard()
         dotenv_path, dotenv_n = _load_dotenv()
         cfg_default = {"provider": wiz.provider, "model": wiz.model}
-
-    args = _parse_args(argv)
 
     # Saved config defaults take effect *only when the user didn't pass
     # the corresponding flag*. We detect that by scanning `raw` rather
@@ -826,12 +879,23 @@ def main(argv: list[str] | None = None) -> int:
     def _flag_present(flag: str) -> bool:
         return any(a == flag or a.startswith(flag + "=") for a in raw)
 
-    provider = args.provider if _flag_present("--provider") \
-        else cfg_default.get("provider", args.provider)
-    model = args.model if _flag_present("--model") \
-        else cfg_default.get("model", args.model)
-    policy_name = args.policy if _flag_present("--policy") \
-        else cfg_default.get("policy", args.policy)
+    def _pick(flag: str, arg_val, cfg_map: dict, key: str):
+        return arg_val if _flag_present(flag) else cfg_map.get(key, arg_val)
+
+    provider = _pick("--provider", args.provider, cfg_default, "provider")
+    model = _pick("--model", args.model, cfg_default, "model")
+    policy_name = _pick("--policy", args.policy, cfg_default, "policy")
+    temperature = _pick("--temperature", args.temperature, cfg_default, "temperature")
+    n_candidates = _pick("--n-candidates", args.n_candidates, cfg_default, "n_candidates")
+    skills_enabled = args.skills or bool(cfg_default.get("skills", False))
+    sandbox = args.sandbox if _flag_present("--sandbox") \
+        else (cfg_default.get("sandbox") or args.sandbox)
+    budget_steps = _pick("--budget-steps", args.budget_steps, cfg_budget, "steps")
+    budget_wall_s = _pick("--budget-wall", args.budget_wall, cfg_budget, "wall_s")
+    budget_tokens = _pick("--budget-tokens", args.budget_tokens, cfg_budget, "tokens")
+    budget_cost_usd = _pick("--budget-cost", args.budget_cost, cfg_budget, "cost_usd")
+    theme_name = str(cfg_ui.get("theme") or "solarized-light")
+
     # A saved config may name a policy this build no longer exposes (e.g. a
     # research policy like `best_of_n` that lives only in the private repo).
     # Don't crash on a stale default — fall back to the argparse default and
@@ -846,21 +910,63 @@ def main(argv: list[str] | None = None) -> int:
         )
         policy_name = fallback
 
+    # Launch TUI — shown on every TTY start (skip with --no-setup). The
+    # dashboard is pre-filled from the values resolved above, so `s`
+    # (start) accepts them in one keypress.
+    if use_tui:
+        from .setup_tui import SetupValues, run_setup
+
+        seed = SetupValues(
+            provider=provider,
+            model=model,
+            policy=policy_name,
+            budget_steps=int(budget_steps),
+            budget_wall_s=float(budget_wall_s),
+            budget_tokens=int(budget_tokens) if budget_tokens else None,
+            budget_cost_usd=float(budget_cost_usd) if budget_cost_usd else None,
+            theme=theme_name,
+            sandbox=sandbox or "process",
+            temperature=float(temperature),
+            skills=skills_enabled,
+            n_candidates=int(n_candidates),
+        )
+        result = run_setup(seed)
+        if result is None:
+            return 0  # user quit from the setup screen
+        v = result.values
+        provider, model, policy_name = v.provider, v.model, v.policy
+        temperature, n_candidates = v.temperature, v.n_candidates
+        skills_enabled, sandbox = v.skills, v.sandbox
+        budget_steps, budget_wall_s = v.budget_steps, v.budget_wall_s
+        budget_tokens, budget_cost_usd = v.budget_tokens, v.budget_cost_usd
+        theme_name = v.theme
+        if result.save_default:
+            _persist_setup(v)
+
+    # Activate the theme before any Console is constructed, then paint
+    # the terminal's own default bg/fg (OSC 10/11) so the theme persists
+    # through the whole REPL session, not just the setup screen. Undone
+    # on exit in the finally below.
+    from .themes import apply_terminal_colors, reset_terminal_colors
+    from .themes import set_active as _set_theme
+    _set_theme(theme_name)
+    terminal_painted = apply_terminal_colors()
+
     app = MyAgentApp(
         provider=provider,
         model=model,
         policy_name=policy_name,
-        temperature=args.temperature,
-        n_candidates=args.n_candidates,
-        budget_steps=args.budget_steps,
-        budget_wall_s=args.budget_wall,
-        budget_tokens=args.budget_tokens,
-        budget_cost_usd=args.budget_cost,
+        temperature=float(temperature),
+        n_candidates=int(n_candidates),
+        budget_steps=int(budget_steps),
+        budget_wall_s=float(budget_wall_s),
+        budget_tokens=int(budget_tokens) if budget_tokens else None,
+        budget_cost_usd=float(budget_cost_usd) if budget_cost_usd is not None else None,
         no_shell=args.no_shell,
         no_plan=args.no_plan,
-        sandbox=args.sandbox,
+        sandbox=sandbox,
         sandbox_image=args.sandbox_image,
-        skills_enabled=args.skills,
+        skills_enabled=skills_enabled,
     )
     if dotenv_path is not None:
         app.console.print(
@@ -870,14 +976,18 @@ def main(argv: list[str] | None = None) -> int:
         _apply_resume(app, args.resume)
 
     try:
-        app.rebuild_llm()
-    except Exception as exc:
-        print(f"failed to build LLM client for provider={args.provider}: {exc}",
-              file=sys.stderr)
-        return 2
-    app.rebuild_tools()
-    app.rebuild_policy()
-    return app.run()
+        try:
+            app.rebuild_llm()
+        except Exception as exc:
+            print(f"failed to build LLM client for provider={provider}: {exc}",
+                  file=sys.stderr)
+            return 2
+        app.rebuild_tools()
+        app.rebuild_policy()
+        return app.run()
+    finally:
+        if terminal_painted:
+            reset_terminal_colors()
 
 
 def _apply_resume(app: "MyAgentApp", which: str) -> None:
