@@ -35,6 +35,7 @@ from ..memory.skill_harvester import HarvestConfig, harvest_from_run
 from ..tools.base import ToolRegistry
 from ..tools.calculator import make_calculator_tool
 from ..tools.file_reader import make_file_reader_tool
+from ..tools.file_writer import make_file_writer_tool
 from ..tools.grep import make_grep_tool
 from ..tools.list_files import make_list_files_tool
 from ..tools.memory import make_memory_tool
@@ -153,6 +154,7 @@ class MyAgentApp:
             make_search_tool(),
             make_url_reader_tool(),
             make_file_reader_tool(),
+            make_file_writer_tool(),
             make_calculator_tool(),
             make_python_sandbox_tool(sandbox=self.sandbox, **py_extra),
             make_list_files_tool(),

@@ -78,29 +78,52 @@ class McpManager:
         self._warn = warn or (lambda _msg: None)
         self._sessions: list[McpSession] = []
         self._tools: list[JsonTool] = []
+        # Per-server outcome of the last start_all(), in config order:
+        # {"name", "transport", "target", "state": "connected"|"failed",
+        #  "error": str|None, "tools": [local tool names]}
+        self._statuses: list[dict] = []
+
+    @staticmethod
+    def _target(cfg: McpServerConfig) -> str:
+        if cfg.transport == "http":
+            return cfg.url or "?"
+        return " ".join([cfg.command or "?", *cfg.args])
 
     def start_all(self) -> None:
         """Connect every configured server. A failure on one server is
         logged and skipped — the others (and the agent) keep working."""
+        self._statuses = []
         for cfg in self._configs:
+            status = {"name": cfg.name, "transport": cfg.transport,
+                      "target": self._target(cfg), "state": "failed",
+                      "error": None, "tools": []}
+            self._statuses.append(status)
             try:
                 sess = connect(cfg)
             except McpError as exc:
+                status["error"] = str(exc)
                 self._warn(f"[mcp] skipping {cfg.name!r}: {exc}")
                 continue
             self._sessions.append(sess)
             try:
                 bridged = bridge_session(sess, prefix=self._prefix)
             except McpError as exc:
+                status["error"] = f"tools/list failed: {exc}"
                 self._warn(f"[mcp] {cfg.name!r}: tools/list failed: {exc}")
                 continue
             self._tools.extend(bridged)
+            status["state"] = "connected"
+            status["tools"] = [t.name for t in bridged]
 
     def tools(self) -> list[JsonTool]:
         return list(self._tools)
 
     def server_count(self) -> int:
         return len(self._sessions)
+
+    def statuses(self) -> list[dict]:
+        """Per-server connection status from the last start_all()."""
+        return [dict(s, tools=list(s["tools"])) for s in self._statuses]
 
     def close_all(self) -> None:
         for sess in self._sessions:

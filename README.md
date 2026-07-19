@@ -100,6 +100,8 @@ banna config mcp list            # show configured servers
 banna config mcp remove collab   # drop one
 ```
 
+Inside the REPL, `/mcp` shows every configured server with a live connection status (`● connected` / `✗ failed` + the error) and the namespaced tools it contributed. banna also ships a standard-server catalog: `/mcp install collab` fetches [agentic-tools](https://github.com/siavashmonfared/agentic-tools) (a shared brainstorm thread for multi-agent workflows), provisions its dependencies in a dedicated venv under `~/.config/banna/mcp-servers/`, registers it, and connects — no manual setup. `/mcp reload` reconnects after config changes.
+
 Servers connect when the REPL starts and shut down on exit; a server that fails to start is reported and skipped rather than crashing the session. MCP tools run external code, so they go through the same per-call permission prompt as `run_shell`.
 
 ## Sessions & resume

@@ -146,6 +146,25 @@ def test_manager_skips_broken_server(fake_server):
         mgr.close_all()
 
 
+def test_manager_statuses(fake_server):
+    good = _cfg(fake_server)
+    bad = McpServerConfig(name="bad", transport="stdio",
+                          command="/nonexistent/binary_xyz", args=[], timeout_s=5.0)
+    mgr = McpManager([bad, good])
+    mgr.start_all()
+    try:
+        by_name = {s["name"]: s for s in mgr.statuses()}
+        assert by_name["bad"]["state"] == "failed"
+        assert by_name["bad"]["error"]
+        assert by_name["bad"]["tools"] == []
+        assert by_name["fake"]["state"] == "connected"
+        assert by_name["fake"]["error"] is None
+        assert by_name["fake"]["tools"] == ["fake.echo"]
+        assert by_name["fake"]["transport"] == "stdio"
+    finally:
+        mgr.close_all()
+
+
 def test_config_validation():
     with pytest.raises(McpError):
         connect(McpServerConfig(name="x", transport="stdio", command=None))

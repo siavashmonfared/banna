@@ -438,6 +438,13 @@ class ReActPolicy:
             act = step.action
             obs = step.observation
             if act.kind == ActionKind.THINK:
+                # Empty-reply markers are internal bookkeeping, not model
+                # output. Replaying them as assistant turns teaches the
+                # model to emit the marker string — N identical turns in a
+                # row is a repetition attractor, and a forced final_answer
+                # after a run of empties parrots them into the answer.
+                if (act.meta or {}).get("empty_reply"):
+                    continue
                 # Default: represent thinking as an assistant text turn
                 # (the model's own scratchpad).
                 # Exception: feedback injected by external machinery (e.g.

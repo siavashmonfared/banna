@@ -241,6 +241,28 @@ def test_driver_with_react_respects_step_budget() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_history_skips_empty_reply_thinks() -> None:
+    """[empty_reply] marker THINKs are bookkeeping — replaying them as
+    assistant turns teaches the model to parrot the marker string."""
+    from banna_agent.core.types import Action, Observation
+    state = AgentState(question="q")
+    state.append_step(
+        Action(kind=ActionKind.THINK, text="real reasoning"),
+        Observation(ok=True, data={}),
+    )
+    for _ in range(3):
+        state.append_step(
+            Action(kind=ActionKind.THINK,
+                   text="[empty_reply] model returned no text and no tool_calls",
+                   meta={"repair": True, "empty_reply": True}),
+            Observation(ok=True, data={}),
+        )
+    msgs = ReActPolicy()._history(state)
+    texts = [b.text for m in msgs for b in m.content if b.kind == "text"]
+    assert "real reasoning" in texts
+    assert not any("empty_reply" in (t or "") for t in texts)
+
+
 def test_history_no_nudge_below_threshold() -> None:
     """No commit-pressure message when budget is mostly unspent."""
     from banna_agent.core.types import Budget

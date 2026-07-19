@@ -35,6 +35,7 @@ from .user_io import UserIO
 # UX shape has settled.
 _GATED_TOOLS: dict[str, str] = {
     "run_shell": "exec",
+    "write_file": "write",
 }
 
 

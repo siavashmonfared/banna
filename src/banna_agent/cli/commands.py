@@ -9,6 +9,7 @@ parses a slash line and calls the right handler.
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import sys
 from typing import Any, Callable
@@ -343,6 +344,7 @@ Slash commands
   /temperature <float>           change temperature (where applicable)
   /budget [steps=N] [wall=N]     change default per-task budget
   /tools                         list registered tools
+  /mcp [install <name>|reload]   MCP servers: connection status + tools
   /keys                          show provider API key status (masked)
   /status                        summary: provider, model, policy, budget, toggles, cost
   /cost [detailed|rates]         show estimated $ cost + tokens for the session
@@ -633,6 +635,86 @@ def cmd_budget(app: Any, args: list[str]) -> bool:
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
+
+
+
+
+def cmd_mcp(app: Any, args: list[str]) -> bool:
+    """MCP servers: connection status + bridged tools.
+
+    Usage:
+      /mcp                   status of each configured server + its tools
+      /mcp install <name>    fetch + register a standard server (e.g. collab)
+      /mcp reload            reconnect all servers (picks up config changes)
+
+    Servers are registered with `banna config mcp add ...` (stdio or
+    HTTP) or via the standard-server catalog. Status shows whether each
+    server is connected and which namespaced tools it contributed.
+    """
+    from .mcp_config import (
+        STANDARD_SERVERS,
+        install_standard_server,
+        read_mcp_servers,
+    )
+
+    sub = args[0].lower() if args else ""
+    if sub == "install":
+        if len(args) < 2:
+            app.console.print(
+                f"usage: /mcp install <name>   "
+                f"(standard: {', '.join(STANDARD_SERVERS)})")
+            return False
+        ok, msg = install_standard_server(
+            args[1], say=lambda m: app.console.print(f"[dim]{m}[/dim]"))
+        app.console.print(f"[green]✓[/green] {msg}" if ok else f"[red]✗[/red] {msg}")
+        if not ok:
+            return False
+        app.close_mcp()          # reconnect below so status is live
+    elif sub == "reload":
+        app.close_mcp()
+        app.console.print("[dim]mcp: reconnecting…[/dim]")
+    elif sub:
+        app.console.print(
+            f"[red]unknown subcommand:[/red] {sub}   "
+            "(use /mcp, /mcp install <name>, /mcp reload)")
+        return False
+
+    configured = read_mcp_servers()
+    app._mcp_tools()             # lazy-connects on first call
+    mgr = getattr(app, "_mcp_manager", None)
+    statuses = mgr.statuses() if mgr is not None else []
+
+    if not configured and not statuses and not STANDARD_SERVERS:
+        app.console.print("[dim]no MCP servers configured.[/dim]")
+        return False
+
+    for st in statuses:
+        mark = ("[green]●[/green] connected" if st["state"] == "connected"
+                else "[red]✗[/red] failed")
+        app.console.print(
+            f"\n[bold]{st['name']}[/bold]  "
+            f"[dim]({st['transport']} · {st['target']})[/dim]  {mark}")
+        if st["state"] == "connected":
+            for t in st["tools"]:
+                app.console.print(f"    [cyan]{t}[/cyan]")
+            if not st["tools"]:
+                app.console.print("    [dim](no tools advertised)[/dim]")
+        elif st["error"]:
+            app.console.print(f"    [red]{st['error']}[/red]")
+
+    seen = {st["name"] for st in statuses}
+    for name in configured:
+        if name not in seen:
+            app.console.print(
+                f"\n[bold]{name}[/bold]  [yellow]○ not connected[/yellow]"
+                "  [dim](added since startup — run /mcp reload)[/dim]")
+    for name, spec in STANDARD_SERVERS.items():
+        if name not in configured and name not in seen:
+            app.console.print(
+                f"\n[bold]{name}[/bold]  [dim]{spec['blurb']}[/dim]\n"
+                f"    [yellow]available[/yellow] — install with "
+                f"[bold]/mcp install {name}[/bold]")
+    return False
 
 
 def cmd_tools(app: Any, args: list[str]) -> bool:
@@ -1389,6 +1471,7 @@ COMMANDS: dict[str, Callable[[Any, list[str]], bool]] = {
     "temp": cmd_temperature,
     "budget": cmd_budget,
     "tools": cmd_tools,
+    "mcp": cmd_mcp,
     "keys": cmd_keys,
     "status": cmd_status,
     "cost": cmd_cost,
@@ -1449,8 +1532,19 @@ def install_completer() -> None:
         pass
 
 
+# A command token is a single `/word` — letters then word chars, no
+# further slashes or dots. This is what keeps absolute paths out of the
+# dispatcher: `/Users/me/resume.tex give me feedback` must reach the
+# agent as task text, not die as "unknown command". Typos like `/modle`
+# still match, so they get the unknown-command hint instead of being
+# silently sent to the LLM.
+_COMMAND_TOKEN_RE = re.compile(r"^/[A-Za-z?][\w+-]*$")
+
+
 def is_command(line: str) -> bool:
-    return line.strip().startswith("/")
+    stripped = line.strip()
+    first = stripped.split(None, 1)[0] if stripped else ""
+    return bool(_COMMAND_TOKEN_RE.match(first))
 
 
 def dispatch(app: Any, line: str) -> bool:
