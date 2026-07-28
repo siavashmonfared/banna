@@ -482,3 +482,84 @@ def test_bad_request_is_not_swallowed_as_retryable() -> None:
 
     with pytest.raises(_BadRequest):
         _chat(_RaisingSDK(_BadRequest("malformed")))
+
+
+# ---------------------------------------------------------------------------
+# Sampling-param handling (temperature 400 on newer models)
+# ---------------------------------------------------------------------------
+
+
+class _SamplingErr(Exception):
+    def __init__(self, msg: str, status: int = 400) -> None:
+        super().__init__(msg)
+        self.status_code = status
+
+
+class _RejectTempMessages:
+    """Fake that 400s whenever `temperature` is present, like Sonnet 5+."""
+
+    def __init__(self, resp: dict) -> None:
+        self.resp = resp
+        self.calls: list[dict] = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        if "temperature" in kwargs:
+            raise _SamplingErr("temperature is deprecated for this model.")
+        return self.resp
+
+
+@dataclass
+class _RejectTempSDK:
+    resp: dict = field(default_factory=dict)
+    messages: _RejectTempMessages = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.messages = _RejectTempMessages(self.resp)
+
+
+def test_known_new_model_omits_temperature() -> None:
+    sdk = _RejectTempSDK(resp=_basic_response())
+    client = AnthropicClient(model="claude-sonnet-5", sdk=sdk)
+    client.chat(
+        messages=[Message(role="user", content=[ContentBlock(kind="text", text="hi")])],
+        temperature=0.7,
+    )
+    # One call, no temperature, no wasted 400.
+    assert len(sdk.messages.calls) == 1
+    assert "temperature" not in sdk.messages.calls[0]
+
+
+def test_unknown_model_self_heals_on_sampling_400() -> None:
+    sdk = _RejectTempSDK(resp=_basic_response())
+    client = AnthropicClient(model="some-future-model", sdk=sdk)
+    reply = client.chat(
+        messages=[Message(role="user", content=[ContentBlock(kind="text", text="hi")])],
+        temperature=0.7,
+    )
+    # First call sent temperature (400), retried without it, and succeeded.
+    assert reply.text == "hello"
+    assert len(sdk.messages.calls) == 2
+    assert "temperature" in sdk.messages.calls[0]
+    assert "temperature" not in sdk.messages.calls[1]
+    # The model is remembered, so the next call skips temperature upfront.
+    client.chat(
+        messages=[Message(role="user", content=[ContentBlock(kind="text", text="hi")])],
+        temperature=0.7,
+    )
+    assert "temperature" not in sdk.messages.calls[-1]
+    assert len(sdk.messages.calls) == 3  # no second retry
+
+
+def test_older_model_still_sends_temperature() -> None:
+    sdk = _RejectTempSDK(resp=_basic_response())
+    client = AnthropicClient(model="claude-opus-4-6", sdk=sdk)
+    # opus-4-6 accepts temperature, so the fake must not be triggered.
+    # Use a fake that accepts it: swap to the passthrough _FakeSDK.
+    sdk2 = _FakeSDK(fake_response=_basic_response())
+    client2 = AnthropicClient(model="claude-opus-4-6", sdk=sdk2)
+    client2.chat(
+        messages=[Message(role="user", content=[ContentBlock(kind="text", text="hi")])],
+        temperature=0.3,
+    )
+    assert sdk2.messages.last_kwargs["temperature"] == 0.3

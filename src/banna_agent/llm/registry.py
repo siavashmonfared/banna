@@ -90,12 +90,34 @@ def _ollama_factory(cfg: OllamaConfig, **kw: Any) -> LLMClient:
     )
 
 
+def _openai_compat_factory(default_model: str) -> ClientFactory:
+    """Build a factory for an OpenAI-wire-compatible third-party provider
+    (Kimi, GLM, Together, …). `cfg` is an OpenAIConfig carrying the
+    vendor's key + preset base_url (see llm/config.py::_OPENAI_COMPAT)."""
+    def factory(cfg: OpenAIConfig, **kw: Any) -> LLMClient:
+        # `make_client` always passes model=... (None when unset), so a
+        # dict default wouldn't fire — fall back with `or`.
+        return OpenAIClient(
+            model=kw.get("model") or default_model,
+            api_key=cfg.api_key,
+            base_url=cfg.base_url,
+            organization=cfg.organization,
+            system_default=kw.get("system_default"),
+        )
+    return factory
+
+
 _REGISTRY: dict[str, ClientFactory] = {
     "anthropic": _anthropic_factory,
     "bedrock": _bedrock_factory,
     "openai": _openai_factory,
     "gemini": _gemini_factory,
     "ollama": _ollama_factory,
+    # OpenAI-compatible third-party providers. Defaults are current flagship
+    # ids; users can pick any model the vendor serves via `/model`.
+    "kimi": _openai_compat_factory("kimi-k2.6"),
+    "glm": _openai_compat_factory("glm-4.6"),
+    "huggingface": _openai_compat_factory("thinkingmachines/Inkling"),
 }
 
 

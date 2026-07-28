@@ -58,6 +58,9 @@ KNOWN_MODELS: dict[str, tuple[str, ...]] = {
 # is the full accepted-vars map; this keeps the canonical var only.)
 PROVIDER_API_KEY_ENV: dict[str, str] = {
     "openai": "OPENAI_API_KEY",
+    "kimi": "MOONSHOT_API_KEY",
+    "glm": "ZAI_API_KEY",
+    "huggingface": "HF_TOKEN",
     "anthropic": "ANTHROPIC_API_KEY",
     "gemini": "GOOGLE_API_KEY",
 }
@@ -505,6 +508,16 @@ def cmd_provider(app: Any, args: list[str]) -> bool:
     if not _ensure_api_key(app, new):
         return False
     app.provider = new
+    # Reset the model to the new provider's default when the current one
+    # isn't a model that provider serves — otherwise a stale id carries
+    # over (e.g. huggingface's "thinkingmachines/Inkling" into anthropic,
+    # which 400s). Mirrors the launch TUI's provider-switch behavior.
+    if new == "ollama":
+        known = _ollama_models(app)
+    else:
+        known = list(KNOWN_MODELS.get(new, ()))
+    if app.model not in known:
+        app.model = known[0] if known else None
     try:
         app.rebuild_llm()
     except Exception as exc:
@@ -512,7 +525,7 @@ def cmd_provider(app: Any, args: list[str]) -> bool:
         return False
     app.console.print(
         f"provider → [bold]{new}[/bold]   "
-        f"[dim](model is now {app.model or '(provider default)'} — use /model to change)[/dim]"
+        f"[dim](model → {app.model or '(provider default)'} — use /model to change)[/dim]"
     )
     return False
 

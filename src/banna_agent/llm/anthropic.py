@@ -34,6 +34,58 @@ from .base import (
 
 
 # ---------------------------------------------------------------------------
+# Model-shape predicates
+#
+# Anthropic removed the sampling parameters (`temperature`, `top_p`,
+# `top_k`) on its newest models: Fable 5, Sonnet 5, Opus 4.7, and Opus
+# 4.8 reject any of them with a 400 ("temperature is deprecated for this
+# model"). They are still accepted on Opus 4.6, Sonnet 4.6, Opus 4.5,
+# Sonnet 4.5, Haiku 4.5, and older. This is a per-version split (Opus 4.6
+# accepts, 4.7 rejects; Sonnet 4.6 accepts, Sonnet 5 rejects), so we match
+# a known-rejecting set rather than a prefix. Anything not matched here is
+# caught at runtime by the 400-retry fallback in `chat()` and remembered
+# for the rest of the session, so an unlisted future model self-heals.
+# ---------------------------------------------------------------------------
+
+_REJECTS_SAMPLING_EXACT = frozenset({
+    "claude-fable-5",
+    "claude-mythos-5",
+    "claude-sonnet-5",
+})
+
+# Prefixes for families where every published point release rejects
+# sampling (opus-4-7 and opus-4-8 and anything newer in that line).
+_REJECTS_SAMPLING_PREFIXES = (
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+)
+
+
+def _rejects_sampling_params(model_id: str) -> bool:
+    """True if the model 400s on temperature / top_p / top_k."""
+    m = (model_id or "").lower()
+    # Strip a bedrock `anthropic.` prefix if present.
+    if m.startswith("anthropic."):
+        m = m[len("anthropic."):]
+    if m in _REJECTS_SAMPLING_EXACT:
+        return True
+    return any(m.startswith(p) for p in _REJECTS_SAMPLING_PREFIXES)
+
+
+def _is_sampling_400(exc: Exception) -> bool:
+    """True if a raised error is a 400 complaining about a sampling param."""
+    if getattr(exc, "status_code", None) not in (400, None):
+        return False
+    msg = str(exc).lower()
+    return (
+        ("temperature" in msg or "top_p" in msg or "top_k" in msg)
+        and ("deprecated" in msg or "not supported" in msg
+             or "unsupported" in msg or "unexpected" in msg
+             or "removed" in msg)
+    )
+
+
+# ---------------------------------------------------------------------------
 # Serialization helpers: normalized → Anthropic wire format
 # ---------------------------------------------------------------------------
 
@@ -229,6 +281,10 @@ class AnthropicClient:
     prompt_cache: bool = True
 
     provider: str = field(default="anthropic", init=False)
+    # Model ids discovered at runtime to reject sampling params (via a
+    # 400). Seeded empty; a caught sampling-400 adds the model here so the
+    # next call skips temperature instead of failing again.
+    _no_sampling_seen: set = field(default_factory=set, init=False, repr=False)
 
     def _client(self) -> Any:
         if self.sdk is not None:
@@ -343,7 +399,15 @@ class AnthropicClient:
                 }]
             else:
                 kwargs["system"] = sys_prompt
-        if temperature is not None:
+        # Newer Anthropic models (Fable 5 / Sonnet 5 / Opus 4.7+) reject
+        # `temperature` with a 400. Omit it for the known set and for any
+        # model a prior call in this session revealed to reject it.
+        send_temperature = (
+            temperature is not None
+            and not _rejects_sampling_params(model_id)
+            and model_id not in self._no_sampling_seen
+        )
+        if send_temperature:
             kwargs["temperature"] = temperature
         if tools:
             kwargs["tools"] = [_toolspec_to_anthropic(t) for t in tools]
@@ -353,6 +417,17 @@ class AnthropicClient:
         try:
             resp = client.messages.create(**kwargs)
         except Exception as exc:  # noqa: BLE001 — re-classified below
+            # Self-heal: a model we didn't know about rejects sampling
+            # params. Remember it, drop temperature, and retry once so the
+            # user gets an answer instead of a 400 wall.
+            if _is_sampling_400(exc) and "temperature" in kwargs:
+                self._no_sampling_seen.add(model_id)
+                kwargs.pop("temperature", None)
+                resp = client.messages.create(**kwargs)
+                reply = _anthropic_response_to_reply(resp, model_id)
+                if self.transport == "bedrock":
+                    reply.provider = "bedrock"
+                return reply
             from .base import ProviderError
             # Rate limits (429) and transient server errors (5xx / 529
             # "overloaded") are worth a backoff-and-retry; the driver
