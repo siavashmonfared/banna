@@ -59,7 +59,7 @@ banna --policy react --provider openai --model gpt-5-nano
 ```
 $ banna --policy react --provider openai --model gpt-5-nano
 
-● banna · v0.4.0   provider=openai   model=gpt-5-nano   policy=react
+● banna · v0.5.0   provider=openai   model=gpt-5-nano   policy=react
 
 > How many studio albums did Mercedes Sosa release between 2000 and 2009?
 
@@ -261,7 +261,7 @@ Tests mirror `src/` under `tests/`. Run them with:
 pytest -q
 ```
 
-Current status on this branch: **891 passed, 3 skipped** (skips require the optional `chromadb` backend or real API keys).
+Current status on this branch: **956 passed, 4 skipped** (skips require the optional `chromadb` backend, `tiktoken`, or real API keys).
 
 ## Limitations
 
