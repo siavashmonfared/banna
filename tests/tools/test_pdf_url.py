@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-import pytest
 
 import banna_agent.tools.pdf_reader as pdfr
 from banna_agent.tools.url_reader import read_url

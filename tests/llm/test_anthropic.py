@@ -552,10 +552,8 @@ def test_unknown_model_self_heals_on_sampling_400() -> None:
 
 
 def test_older_model_still_sends_temperature() -> None:
-    sdk = _RejectTempSDK(resp=_basic_response())
-    client = AnthropicClient(model="claude-opus-4-6", sdk=sdk)
-    # opus-4-6 accepts temperature, so the fake must not be triggered.
-    # Use a fake that accepts it: swap to the passthrough _FakeSDK.
+    # opus-4-6 accepts temperature, so use the passthrough _FakeSDK that
+    # doesn't reject it.
     sdk2 = _FakeSDK(fake_response=_basic_response())
     client2 = AnthropicClient(model="claude-opus-4-6", sdk=sdk2)
     client2.chat(

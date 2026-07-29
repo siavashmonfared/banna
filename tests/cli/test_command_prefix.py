@@ -8,7 +8,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-import pytest
 
 from banna_agent.cli import commands as C
 
@@ -77,7 +76,6 @@ def test_install_completer_matches_prefix(monkeypatch):
     monkeypatch.setattr(readline, "get_line_buffer", lambda: "/re")
     comp = readline.get_completer()
     assert comp is not None
-    first = comp("/re", 0)
     # Every yielded option must start with /re (resume, etc.)
     got = []
     i = 0

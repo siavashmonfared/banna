@@ -12,7 +12,6 @@ import subprocess
 
 import pytest
 
-from banna_agent.tools import sandbox
 from banna_agent.tools.sandbox import (
     DockerBackend,
     ProcessBackend,

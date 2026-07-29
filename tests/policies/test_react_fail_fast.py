@@ -6,7 +6,6 @@ retrying the same deterministic error.
 """
 from __future__ import annotations
 
-import pytest
 
 from banna_agent.core.agent import run_policy
 from banna_agent.core.budget import Budget
@@ -35,7 +34,7 @@ class _RetryableLLM:
         self.calls += 1
         if self.calls <= 2:
             raise ProviderError("transient blip", retryable=True)
-        from banna_agent.llm.base import ContentBlock, ToolCallRequest
+        from banna_agent.llm.base import ContentBlock
         # Tool-call final_answer so the policy commits.
         return LLMReply(
             provider="openai",

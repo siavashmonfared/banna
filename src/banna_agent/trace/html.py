@@ -92,7 +92,7 @@ def render_html(events: list[dict[str, Any]]) -> str:
 
     body: list[str] = []
     body.append('<div class="wrap">')
-    body.append(f"<h1>banna trace</h1>")
+    body.append("<h1>banna trace</h1>")
     body.append(f'<div class="sub">run {_esc(run_id)} · policy '
                 f'<b>{_esc(policy)}</b> · {len(events)} events</div>')
     body.append('<div class="label">question</div>')
