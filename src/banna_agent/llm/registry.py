@@ -87,13 +87,14 @@ def _ollama_factory(cfg: OllamaConfig, **kw: Any) -> LLMClient:
         model=kw.get("model", "qwen2.5:7b"),
         base_url=cfg.base_url,
         system_default=kw.get("system_default"),
+        num_ctx=kw.get("num_ctx", cfg.num_ctx),
     )
 
 
 def _openai_compat_factory(default_model: str) -> ClientFactory:
     """Build a factory for an OpenAI-wire-compatible third-party provider
-    (Kimi, GLM, Together, …). `cfg` is an OpenAIConfig carrying the
-    vendor's key + preset base_url (see llm/config.py::_OPENAI_COMPAT)."""
+    (Kimi, GLM, Hugging Face router, …). `cfg` is an OpenAIConfig carrying
+    the vendor's key + preset base_url (see llm/config.py::_OPENAI_COMPAT)."""
     def factory(cfg: OpenAIConfig, **kw: Any) -> LLMClient:
         # `make_client` always passes model=... (None when unset), so a
         # dict default wouldn't fire — fall back with `or`.
@@ -150,4 +151,12 @@ def make_client(
             f"unknown provider {provider!r}; registered: {sorted(_REGISTRY)}"
         ) from exc
     cfg = env_override if env_override is not None else resolve_provider_config(provider)
-    return factory(cfg, model=model, **kwargs)
+    guard = kwargs.pop("context_guard", True)
+    client = factory(cfg, model=model, **kwargs)
+    if not guard:
+        return client
+    # Applied to every provider, not just the ones known to truncate: the
+    # check reads usage numbers each adapter already reports, so it costs
+    # nothing and catches the same class of failure wherever it appears.
+    from .context import ContextGuard
+    return ContextGuard(inner=client)

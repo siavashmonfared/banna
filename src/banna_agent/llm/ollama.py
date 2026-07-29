@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 from .base import ContentBlock, LLMReply, Message, ToolSpec, Usage
+from .context import estimate_request_tokens
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +84,41 @@ def _json_dumps(v: Any) -> str:
 
 def _synthesize_id() -> str:
     return f"tc_{uuid.uuid4().hex[:8]}"
+
+
+# Window sizes we're willing to ask for. Ollama reallocates the KV cache
+# whenever num_ctx changes, so snapping to a few fixed buckets keeps the
+# value stable across turns — the window steps up occasionally instead of
+# jittering on every message and forcing a reload each time.
+_CTX_BUCKETS = (4096, 8192, 16384, 32768, 65536, 131072)
+
+
+def _auto_num_ctx(
+    *,
+    messages: Sequence[Message],
+    tools: Sequence[ToolSpec],
+    system: str | None,
+    max_tokens: int | None,
+    ceiling: int,
+    model: str = "",
+) -> int:
+    """Smallest bucket that fits this request plus room to answer in.
+
+    Derived from the payload rather than a per-model table: the adapter
+    can't know a local model's trained window, but it does know how much
+    it is about to send, and asking for less than that guarantees silent
+    truncation.
+    """
+    from .tokenizers import resolve_counter
+    needed = estimate_request_tokens(
+        messages=messages, tools=tools, system=system,
+        counter=resolve_counter("ollama", model))
+    needed += max_tokens or 1024          # room for the reply
+    needed = int(needed * 1.25)           # headroom for tokenizer drift
+    for bucket in _CTX_BUCKETS:
+        if bucket >= needed and bucket <= ceiling:
+            return bucket
+    return min(ceiling, _CTX_BUCKETS[-1])
 
 
 def _toolspec_to_ollama(spec: ToolSpec) -> dict[str, Any]:
@@ -169,6 +205,15 @@ class OllamaClient:
     system_default: str | None = None
     timeout_s: float = 120.0
     http_post: Any = None
+    # Sent as options.num_ctx. Ollama defaults to a 4096-token window and
+    # silently truncates anything longer, which drops tool schemas and the
+    # user's question once several servers are attached. Left as `None`,
+    # the adapter sizes the window from the request it is about to send
+    # (see `_auto_num_ctx`); set an int to pin it instead.
+    num_ctx: int | None = None
+    # Upper bound for the auto-sized window, so a runaway history can't ask
+    # for a KV cache that doesn't fit in memory.
+    num_ctx_max: int = 131072
 
     provider: str = field(default="ollama", init=False)
 
@@ -205,6 +250,12 @@ class OllamaClient:
             options["temperature"] = temperature
         if max_tokens is not None:
             options["num_predict"] = max_tokens
+        options["num_ctx"] = self.num_ctx if self.num_ctx is not None else (
+            _auto_num_ctx(
+                messages=messages, tools=tools, system=sys_prompt,
+                max_tokens=max_tokens, ceiling=self.num_ctx_max,
+                model=model_id,
+            ))
         if options:
             body["options"] = options
         if tools:

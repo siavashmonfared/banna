@@ -13,8 +13,10 @@ the driver catches and converts to a `tool_result` block with
 """
 from __future__ import annotations
 
+import hashlib
+import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable
 
 
@@ -88,9 +90,47 @@ def invoke_tool(tool: JsonTool, arguments: dict[str, Any]) -> ToolInvocation:
 # ---------------------------------------------------------------------------
 
 
+# The intersection of what the providers accept as a tool name. OpenAI and
+# Anthropic both reject anything outside `[a-zA-Z0-9_-]`; OpenAI caps the
+# length at 64, the shortest of the caps; Gemini additionally requires a
+# leading letter or underscore. Conforming to all of them at once means a
+# registry built for one provider works on every other.
+_NAME_ALLOWED = re.compile(r"[^a-zA-Z0-9_-]")
+_NAME_MAX_LEN = 64
+
+
+def portable_tool_name(name: str) -> str:
+    """Coerce `name` into a form every provider accepts.
+
+    Tool names reach us from places we don't control — MCP servers name
+    their own tools, and nothing stops one using dots, slashes, or 90
+    characters. An illegal name is a request-time 400 from the provider,
+    which surfaces far from its cause, so names are normalized once on the
+    way into the registry rather than patched per adapter.
+
+    Truncation gets a short digest of the original appended, so two long
+    names sharing a prefix stay distinct.
+    """
+    safe = _NAME_ALLOWED.sub("_", name)
+    if not safe or not (safe[0].isalpha() or safe[0] == "_"):
+        safe = f"t_{safe}"
+    if len(safe) > _NAME_MAX_LEN:
+        digest = hashlib.sha1(name.encode("utf-8")).hexdigest()[:6]
+        safe = f"{safe[: _NAME_MAX_LEN - 7]}_{digest}"
+    return safe
+
+
 class ToolRegistry:
     """Lightweight name -> JsonTool map. Policies receive a registry and
-    look up tools by name when dispatching `tool_use` blocks."""
+    look up tools by name when dispatching `tool_use` blocks.
+
+    The registry is the single choke point between every tool source
+    (built-ins, MCP servers, anything added later) and every provider, so
+    it is where name portability is enforced. Tools are stored under their
+    normalized name, which is also what gets advertised to the model and
+    what comes back on a `tool_use` block — so lookup stays consistent
+    without any adapter needing to map names back and forth.
+    """
 
     def __init__(self, tools: list[JsonTool] | None = None) -> None:
         self._tools: dict[str, JsonTool] = {}
@@ -98,9 +138,12 @@ class ToolRegistry:
             self.register(t)
 
     def register(self, tool: JsonTool) -> None:
-        if tool.name in self._tools:
-            raise ValueError(f"duplicate tool name: {tool.name!r}")
-        self._tools[tool.name] = tool
+        name = portable_tool_name(tool.name)
+        if name in self._tools:
+            raise ValueError(f"duplicate tool name: {name!r}")
+        if name != tool.name:
+            tool = replace(tool, name=name)
+        self._tools[name] = tool
 
     def get(self, name: str) -> JsonTool | None:
         return self._tools.get(name)

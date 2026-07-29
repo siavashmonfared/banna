@@ -100,7 +100,7 @@ def test_bridge_produces_gated_jsontools(fake_server):
         tools = bridge_session(sess, prefix=True)
         assert len(tools) == 1
         t = tools[0]
-        assert t.name == "fake.echo"           # namespaced
+        assert t.name == "fake__echo"          # namespaced, provider-safe
         assert "mcp" in t.capabilities
         # The handler proxies to the live server.
         result = t.handler({"text": "world"})
@@ -124,7 +124,7 @@ def test_manager_start_collect_close(fake_server):
     try:
         assert mgr.server_count() == 1
         names = [t.name for t in mgr.tools()]
-        assert names == ["fake.echo"]
+        assert names == ["fake__echo"]
     finally:
         mgr.close_all()
     assert mgr.server_count() == 0
@@ -141,7 +141,7 @@ def test_manager_skips_broken_server(fake_server):
         # Bad server skipped with a warning; good server still works.
         assert mgr.server_count() == 1
         assert any("bad" in w for w in warnings)
-        assert [t.name for t in mgr.tools()] == ["fake.echo"]
+        assert [t.name for t in mgr.tools()] == ["fake__echo"]
     finally:
         mgr.close_all()
 
@@ -159,7 +159,7 @@ def test_manager_statuses(fake_server):
         assert by_name["bad"]["tools"] == []
         assert by_name["fake"]["state"] == "connected"
         assert by_name["fake"]["error"] is None
-        assert by_name["fake"]["tools"] == ["fake.echo"]
+        assert by_name["fake"]["tools"] == ["fake__echo"]
         assert by_name["fake"]["transport"] == "stdio"
     finally:
         mgr.close_all()

@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-from banna_agent.llm.base import ContentBlock, Message
+from banna_agent.llm.base import ContentBlock, Message, ToolSpec
 from banna_agent.llm.ollama import OllamaClient, _messages_to_ollama
 
 
@@ -157,3 +157,60 @@ def test_chat_surfaces_thinking_block() -> None:
     assert "text" in kinds
     # Thinking comes first in our deserialization.
     assert kinds[0] == "thinking"
+
+
+# ---------------------------------------------------------------------------
+# Context window
+# ---------------------------------------------------------------------------
+
+
+def test_chat_pins_explicit_num_ctx() -> None:
+    captured: dict = {}
+    payload = {"model": "m", "message": {"role": "assistant", "content": "ok"}}
+    client = OllamaClient(num_ctx=8192, http_post=_make_post(payload, captured))
+    client.chat(
+        messages=[Message(role="user", content=[ContentBlock(kind="text", text="hi")])]
+    )
+    assert captured["body"]["options"]["num_ctx"] == 8192
+
+
+def test_auto_num_ctx_covers_tool_schemas() -> None:
+    """Ollama's default window is 4096 and it truncates silently past that.
+    A fat tool payload must push the requested window above the default."""
+    captured: dict = {}
+    payload = {"model": "m", "message": {"role": "assistant", "content": "ok"}}
+    fat = [
+        ToolSpec(name=f"tool_{i}", description="d" * 1200,
+                 input_schema={"type": "object", "properties": {}})
+        for i in range(25)
+    ]
+    client = OllamaClient(http_post=_make_post(payload, captured))
+    client.chat(
+        messages=[Message(role="user", content=[ContentBlock(kind="text", text="hi")])],
+        tools=fat,
+    )
+    assert captured["body"]["options"]["num_ctx"] > 4096
+
+
+def test_auto_num_ctx_stays_small_for_small_requests() -> None:
+    """Sizing is bucketed, so a short turn doesn't allocate a huge KV cache."""
+    captured: dict = {}
+    payload = {"model": "m", "message": {"role": "assistant", "content": "ok"}}
+    client = OllamaClient(http_post=_make_post(payload, captured))
+    client.chat(
+        messages=[Message(role="user", content=[ContentBlock(kind="text", text="hi")])]
+    )
+    assert captured["body"]["options"]["num_ctx"] == 4096
+
+
+def test_auto_num_ctx_respects_ceiling() -> None:
+    captured: dict = {}
+    payload = {"model": "m", "message": {"role": "assistant", "content": "ok"}}
+    huge = [ToolSpec(name=f"t_{i}", description="d" * 2000,
+                     input_schema={"type": "object"}) for i in range(200)]
+    client = OllamaClient(num_ctx_max=16384, http_post=_make_post(payload, captured))
+    client.chat(
+        messages=[Message(role="user", content=[ContentBlock(kind="text", text="hi")])],
+        tools=huge,
+    )
+    assert captured["body"]["options"]["num_ctx"] == 16384

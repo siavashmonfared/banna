@@ -709,9 +709,13 @@ def cmd_mcp(app: Any, args: list[str]) -> bool:
             f"[dim]({st['transport']} · {st['target']})[/dim]  {mark}")
         if st["state"] == "connected":
             for t in st["tools"]:
-                app.console.print(f"    [cyan]{t}[/cyan]")
+                app.console.print(f"    [cyan]/{t}[/cyan]")
             if not st["tools"]:
                 app.console.print("    [dim](no tools advertised)[/dim]")
+            else:
+                app.console.print(
+                    f"    [dim]callable directly: /{st['name']} <tool> <text>  "
+                    f"· the agent can call these too[/dim]")
         elif st["error"]:
             app.console.print(f"    [red]{st['error']}[/red]")
 
@@ -1507,11 +1511,14 @@ def command_names() -> list[str]:
     return sorted(COMMANDS)
 
 
-def install_completer() -> None:
+def install_completer(app: Any = None) -> None:
     """Bind a readline Tab-completer for `/command` names.
 
     Typing `/p` then Tab completes to `/policy` (or lists candidates when
     several match). No-op if readline isn't available (e.g. piped input).
+
+    `app` is optional so existing callers keep working; pass it to have
+    the live MCP tool names complete alongside the built-ins.
     """
     try:
         import readline
@@ -1527,8 +1534,16 @@ def install_completer() -> None:
         head = buf[1:]
         if " " in head:
             return None
-        options = [f"/{n}" for n in COMMANDS if n.startswith(head.lower())]
-        options.sort()
+        names = set(COMMANDS)
+        # Live MCP tools complete too, so an installed server is
+        # discoverable by tab rather than only by reading /mcp.
+        if app is not None:
+            try:
+                from . import mcp_commands
+                names.update(mcp_commands.command_names(app))
+            except Exception:
+                pass
+        options = sorted(f"/{n}" for n in names if n.startswith(head.lower()))
         return options[state] if state < len(options) else None
 
     readline.set_completer(_completer)
@@ -1578,6 +1593,14 @@ def dispatch(app: Any, line: str) -> bool:
     args = tokens[1:]
     handler = COMMANDS.get(name)
     if handler is None:
+        # Connected MCP servers and their tools are callable as slash
+        # commands too. Checked before prefix matching so a real tool name
+        # always beats a partial match on a built-in, and before the
+        # unknown-command error so the message stays accurate.
+        from . import mcp_commands
+        handled = mcp_commands.try_dispatch(app, name, args)
+        if handled is not None:
+            return handled
         # Not an exact command — try prefix matching so `/p` resolves toward
         # `/policy` etc. A unique prefix runs directly; an ambiguous one
         # lists the candidates (discoverable without scrolling /help).

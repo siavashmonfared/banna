@@ -590,7 +590,7 @@ class MyAgentApp:
 
     def _run_loop(self) -> int:
         self.print_header()
-        install_completer()  # Tab-completion for /commands
+        install_completer(self)  # Tab-completion for /commands + MCP tools
         self.console.print("[dim]Type a question, or /help for commands (Tab completes). Ctrl-D to exit.[/dim]")
         while True:
             line = self._read_line()

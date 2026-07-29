@@ -10,15 +10,21 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from ..base import JsonTool
+from ..base import JsonTool, portable_tool_name
 from .client import McpError, McpServerConfig, McpSession, connect
 
 
 def _bridge_name(server: str, tool: str, *, prefix: bool) -> str:
     """Namespaced tool name. With `prefix`, `collab_start` on server
-    `collab` becomes `collab.collab_start`, avoiding collisions with
-    built-ins or other servers."""
-    return f"{server}.{tool}" if prefix else tool
+    `collab` becomes `collab__collab_start`, avoiding collisions with
+    built-ins or other servers.
+
+    The separator is `__` rather than `.` because a dot is not portable:
+    `ToolRegistry` would rewrite it anyway (see `portable_tool_name`), and
+    picking the portable form here keeps the name the user sees in `/mcp`
+    identical to the one the model calls.
+    """
+    return portable_tool_name(f"{server}__{tool}" if prefix else tool)
 
 
 def bridge_session(

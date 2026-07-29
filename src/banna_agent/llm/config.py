@@ -94,10 +94,23 @@ class GeminiConfig:
 class OllamaConfig:
     """Ollama local-server configuration."""
     base_url: str = "http://localhost:11434"
+    # `None` lets the adapter size the context window from each request.
+    # Set an int (or OLLAMA_NUM_CTX) to pin it — worth doing when VRAM is
+    # tight and you'd rather cap the KV cache than fit the whole prompt.
+    num_ctx: int | None = None
 
     @classmethod
     def from_env(cls) -> "OllamaConfig":
-        return cls(base_url=os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"))
+        raw = os.environ.get("OLLAMA_NUM_CTX") or os.environ.get(
+            "OLLAMA_CONTEXT_LENGTH")
+        try:
+            num_ctx = int(raw) if raw else None
+        except ValueError:
+            num_ctx = None
+        return cls(
+            base_url=os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"),
+            num_ctx=num_ctx,
+        )
 
 
 # OpenAI-compatible third-party providers: (canonical key vars, base_url
