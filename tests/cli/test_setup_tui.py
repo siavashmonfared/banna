@@ -289,3 +289,15 @@ def test_brand_header_is_the_mascot_with_a_name_and_subtitle():
     assert len(lines) == len(render_hero_mark_rows())
     assert lines[0].endswith("bannaha — setup")
     assert brand_header("banna", "", "mono").plain.split("\n")[0].endswith("banna")
+
+
+def test_importing_the_cli_package_and_theme_does_not_load_readline():
+    """Loading readline reconfigures the tty (echo back on); bannaha imports the mascot header from
+    inside its running full-screen app, so these imports must stay free of it."""
+    import subprocess
+    import sys
+
+    code = ("import sys, banna_agent.cli, banna_agent.cli.theme as t; t.brand_header('x', 'y'); "
+            "print('readline' in sys.modules)")
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == "False"

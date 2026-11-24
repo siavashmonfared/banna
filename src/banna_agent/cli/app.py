@@ -63,10 +63,13 @@ def _make_console() -> Console:
     return Console(theme=scout_theme())
 
 
-try:
-    import readline  # noqa: F401  (gives input() history + line editing)
-except ImportError:
-    pass
+def _enable_readline() -> None:
+    """input() history + line editing. Loaded when the CLI starts, not at import: loading readline
+    reconfigures the terminal, which corrupts a full-screen app that imports banna_agent.cli mid-run."""
+    try:
+        import readline  # noqa: F401
+    except ImportError:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -843,6 +846,7 @@ def _persist_setup(v) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _enable_readline()
     # Subcommand dispatch (banna init / config / providers) before
     # argparse, so legacy `banna --policy X` still works.
     raw = list(sys.argv[1:] if argv is None else argv)
