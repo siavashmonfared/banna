@@ -688,16 +688,22 @@ class DashboardScreen(Screen):
         Binding("q", "quit_setup", "quit", show=True),
     ]
 
+    # Same layout as bannaha's Setup page: mascot header, one rounded accent
+    # frame, `‹ value ›` rows, a ready line under the frame, then key hints.
     DEFAULT_CSS = """
-    DashboardScreen { align: center top; }
-    DashboardScreen #hero { margin: 1 0 0 2; }
+    DashboardScreen #hero { margin: 1 0 0 2; height: auto; }
     DashboardScreen #frame {
-        width: 84; height: auto; margin: 0 2;
-        border: round $secondary; padding: 1 2;
+        width: 100; height: auto; margin: 1 2 0 2;
+        border: round $accent; padding: 1 2;
     }
-    DashboardScreen #rows { height: auto; }
-    DashboardScreen .hint { color: $text-muted; margin: 0 2; }
+    DashboardScreen #rows { height: auto; border: none; }
+    DashboardScreen #status { margin: 1 4; height: auto; }
+    DashboardScreen .hint { color: $text-muted; margin: 0 4; }
     """
+
+    # Rows whose value ←/→ changes in place show `‹ value ›`, as in bannaha.
+    _CYCLABLE = frozenset({"provider", "model", "policy", "theme", "sandbox",
+                           "temperature", "skills", "n_candidates"})
 
     AUTO_FOCUS = "#rows"
 
@@ -711,24 +717,14 @@ class DashboardScreen(Screen):
         yield Static(self._hero(), id="hero")
         with Vertical(id="frame"):
             yield OptionList(id="rows")
+        yield Static(id="status")
         yield Label("↑↓ move · ←/→ toggle · ↵ edit · s start · "
                     "d save as default & start · q quit", classes="hint")
         yield Footer()
 
     def _hero(self) -> Text:
-        from .theme import render_hero_mark_rows
-        rows = render_hero_mark_rows()
-        brand = ("bold" if self._setup.values.theme == "mono"
-                 else f"bold {get_palette(self._setup.values.theme)['green']}")
-        t = Text()
-        for i, row in enumerate(rows):
-            t.append_text(Text.from_markup(row))
-            if i == 0:
-                t.append("   ")
-                t.append("banna", brand)
-                t.append(" — session setup", "dim")
-            t.append("\n")
-        return t
+        from .theme import brand_header
+        return brand_header("banna", "session setup", self._setup.values.theme)
 
     def on_mount(self) -> None:
         self._refresh_rows()
@@ -739,65 +735,96 @@ class DashboardScreen(Screen):
         ol.clear_options()
         for key in _ROWS:
             ol.add_option(Option(self._row_text(key), id=key))
-        ol.add_option(Option(Text("─" * 72, "dim"), disabled=True, id="__sep__"))
+        ol.add_option(Option(Text("─" * 90, "dim"), disabled=True, id="__sep__"))
         ol.add_option(Option(
-            Text("  [ start session ]              (or press s)", "bold"),
+            Text("  [ start session ]  (s)              [ save as default & start ]  (d)", "bold"),
             id="__start__"))
-        ol.add_option(Option(
-            Text("  [ save as default & start ]    (or press d)", "bold"),
-            id="__save__"))
         ol.highlighted = old if old is not None else 0
+        self._refresh_status()
+
+    def _refresh_status(self) -> None:
+        """The ready line under the frame, as on bannaha's Setup page."""
+        v = self._setup.values
+        st = self._setup.scan.get(v.provider)
+        status = Text()
+        if st is not None and not st.ok:
+            status.append("✗ cannot start yet\n", "bold red")
+            status.append(f"  • {PROVIDER_LABELS.get(v.provider, v.provider)}: {st.detail}\n", "red")
+            status.append("  ↵ on Provider pastes a key or picks another provider.", "dim")
+        else:
+            status.append("✓ ready", "bold green")
+            status.append(f"  ·  {v.provider} · {v.model} · {v.policy} · {_budget_display(v)}", "dim")
+        try:
+            self.query_one("#status", Static).update(status)
+        except Exception:
+            pass  # not mounted yet
+
+    _LABELS = {
+        "provider": "Provider", "model": "Model", "policy": "Policy",
+        "budget": "Budget", "theme": "Theme", "sandbox": "Sandbox",
+        "temperature": "Temperature", "skills": "Skills",
+        "n_candidates": "n_candidates",
+    }
 
     def _row_text(self, key: str) -> Text:
+        """One settings row, laid out like bannaha's: label, `‹ value ›`, dim hint."""
+        value, hint = self._row_value(key)
+        width = 90
+        shown = f"‹ {value} ›" if key in self._CYCLABLE else value
+        t = Text(no_wrap=True, overflow="ellipsis")
+        t.append(f"  {self._LABELS[key]:<14}", "bold")
+        t.append(shown, "bold")
+        if isinstance(hint, Text):
+            if hint.plain:
+                t.append("   ")
+                t.append_text(hint)
+        elif hint:
+            room = width - 16 - len(shown) - 3
+            if room > 8:
+                t.append(f"   {hint[:room]}", "dim")
+        return t
+
+    def _row_value(self, key: str) -> tuple[str, Any]:
+        """(value, hint) for a row; the hint is a str (shown dim) or a Text."""
         v = self._setup.values
         scan = self._setup.scan
-        t = Text()
-        label = {
-            "provider": "Provider", "model": "Model", "policy": "Policy",
-            "budget": "Budget", "theme": "Theme", "sandbox": "Sandbox",
-            "temperature": "Temperature", "skills": "Skills",
-            "n_candidates": "n_candidates",
-        }[key]
-        t.append(f"  {label:<14}", "bold")
         if key == "provider":
             st = scan.get(v.provider)
-            t.append(f"{PROVIDER_LABELS.get(v.provider, v.provider):<28}")
+            hint = Text()
             if st and st.ok:
-                t.append("✓ ", "green")
-                t.append(st.detail, "dim")
+                hint.append("✓ ", "green")
+                hint.append(st.detail, "dim")
                 if st.source:
-                    t.append(f" ({st.source})", "dim")
+                    hint.append(f" ({st.source})", "dim")
             elif st:
-                t.append("✗ ", "red")
-                t.append(st.detail, "dim")
-        elif key == "model":
-            t.append(v.model)
-        elif key == "policy":
-            t.append(v.policy)
-            blurb = dict(POLICY_BLURBS).get(v.policy, "")
-            if blurb:
-                t.append(f"   {blurb}", "dim")
-        elif key == "budget":
-            t.append(_budget_display(v))
-        elif key == "theme":
-            t.append(f"{v.theme:<20}")
+                hint.append("✗ ", "red")
+                hint.append(st.detail, "dim")
+            return PROVIDER_LABELS.get(v.provider, v.provider), hint
+        if key == "model":
+            return v.model or "", ""
+        if key == "policy":
+            return v.policy, dict(POLICY_BLURBS).get(v.policy, "")
+        if key == "budget":
+            return _budget_display(v), "↵ edit"
+        if key == "theme":
+            hint = Text()
             if v.theme != "mono":
                 p = get_palette(v.theme)
                 for slot in ("green", "orange", "blue", "violet"):
-                    t.append("██", p[slot])
-        elif key == "sandbox":
-            t.append(v.sandbox)
-            t.append("   docker = network-less, read-only container" if
-                     v.sandbox == "docker" else "   runs on the host", "dim")
-        elif key == "temperature":
-            t.append(f"{v.temperature:g}")
-        elif key == "skills":
-            t.append("on" if v.skills else "off")
-            t.append("   skill-library injection + harvest", "dim")
-        elif key == "n_candidates":
-            t.append(str(v.n_candidates))
-            t.append("   plans for bfs/dfs/best_first/best_of_n", "dim")
-        return t
+                    hint.append("██", p[slot])
+                hint.append("  ")
+            hint.append(THEME_BLURBS.get(v.theme, ""), "dim")
+            return v.theme, hint
+        if key == "sandbox":
+            return v.sandbox, ("docker = network-less, read-only container" if v.sandbox == "docker"
+                               else "runs on the host")
+        if key == "temperature":
+            return f"{v.temperature:g}", ""
+        if key == "skills":
+            return ("on" if v.skills else "off"), "skill-library injection + harvest"
+        if key == "n_candidates":
+            return str(v.n_candidates), "plans for bfs/dfs/best_first/best_of_n"
+        return "", ""
 
     # -- value mutation ---------------------------------------------------
 

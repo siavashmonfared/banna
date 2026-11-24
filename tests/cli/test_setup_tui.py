@@ -279,3 +279,13 @@ def test_persist_setup_writes_sections_and_preserves_packages(isolated_config):
     assert "cost_usd" not in cfg["budget"]      # None = unlimited = omitted
     assert cfg["ui"]["theme"] == "dracula"
     assert cfg["packages"]["numpy"] == "numpy==2.0.0"
+
+
+def test_brand_header_is_the_mascot_with_a_name_and_subtitle():
+    from banna_agent.cli.theme import brand_header, render_hero_mark_rows
+
+    t = brand_header("bannaha", "setup", "solarized-light")
+    lines = t.plain.rstrip("\n").split("\n")
+    assert len(lines) == len(render_hero_mark_rows())
+    assert lines[0].endswith("bannaha — setup")
+    assert brand_header("banna", "", "mono").plain.split("\n")[0].endswith("banna")

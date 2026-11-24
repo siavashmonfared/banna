@@ -1,3 +1,3 @@
 """banna_agent — from-scratch reasoning agent with typed state substrate."""
 
-__version__ = "0.6.0"
+__version__ = "0.6.1"

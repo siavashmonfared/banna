@@ -438,3 +438,28 @@ __all__ = [
     "INPUT_LABEL", "INPUT_TOP_HINT_RIGHT", "INPUT_BOTTOM_HINT_RIGHT",
     "render_input_box_top", "render_input_box_bottom",
 ]
+
+
+def brand_header(name: str = "banna", subtitle: str = "", theme: str | None = None):
+    """The mascot header shared by banna's launch TUI and bannaha's app.
+
+    The 4-row scout mascot with `name` (bold, the theme's agent green) and
+    an optional dim subtitle beside its top row. `theme` is a theme name
+    from `themes.py` (default: the active one); mono drops the color.
+    """
+    from rich.text import Text
+
+    from .themes import get_active, get_palette
+
+    key = theme or get_active()
+    brand = "bold" if key == "mono" else f"bold {get_palette(key)['green']}"
+    t = Text()
+    for i, row in enumerate(render_hero_mark_rows()):
+        t.append_text(Text.from_markup(row))
+        if i == 0:
+            t.append("   ")
+            t.append(name, brand)
+            if subtitle:
+                t.append(f" — {subtitle}", "dim")
+        t.append("\n")
+    return t
