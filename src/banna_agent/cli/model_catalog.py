@@ -54,26 +54,14 @@ CURATED: dict[str, tuple[tuple[str, str], ...]] = {
         ("global.anthropic.claude-sonnet-4-5-20250929-v1:0", "global failover profile"),
     ),
     "ollama": (),  # populated live from /api/tags
-    # OpenAI-compatible third-party providers (reuse the OpenAI adapter).
-    "kimi": (
-        ("kimi-k2.5", "fast, cheap"),
-        ("kimi-k2.6", "well-balanced"),
-        ("kimi-k3", "most capable"),
-        ("moonshot-v1-128k", "long-context"),
-    ),
-    "glm": (
-        ("glm-4.5-air", "fast, cheap"),
-        ("glm-4.5", "well-balanced"),
-        ("glm-4.6", "most capable"),
-    ),
-    # Hugging Face router hosts many open-weights models. Use a bare repo
-    # id (append `:provider` to pin a specific inference provider). Paste
-    # any HF model id via the `/model` "type a name" row; see the live
-    # list at https://router.huggingface.co/v1/models.
-    "huggingface": (
-        ("thinkingmachines/Inkling", "Thinking Machines Inkling"),
-        ("moonshotai/Kimi-K3", "Kimi K3 (open weights)"),
-        ("Qwen/Qwen3.6-27B", "Qwen 3.6 27B"),
+    # OpenRouter (reuses the OpenAI adapter) serves models from many vendors
+    # as `vendor/model`. Paste any id via the `/model` "type a name" row; see
+    # the live list at https://openrouter.ai/models.
+    "openrouter": (
+        ("google/gemini-2.5-flash", "fastest, cheapest"),
+        ("anthropic/claude-haiku-4.5", "fast Claude"),
+        ("openai/gpt-5-mini", "well-balanced"),
+        ("anthropic/claude-sonnet-4.5", "most capable"),
     ),
 }
 
@@ -119,9 +107,7 @@ KEY_VARS: dict[str, tuple[str, ...]] = {
     "openai": ("OPENAI_API_KEY",),
     "anthropic": ("ANTHROPIC_API_KEY",),
     "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
-    "kimi": ("MOONSHOT_API_KEY", "KIMI_API_KEY"),
-    "glm": ("ZAI_API_KEY", "ZHIPU_API_KEY", "GLM_API_KEY"),
-    "huggingface": ("HF_TOKEN", "HUGGINGFACE_API_KEY", "HUGGING_FACE_HUB_TOKEN"),
+    "openrouter": ("OPENROUTER_API_KEY",),
 }
 
 # Human labels for the launch TUI. Internal provider names stay as the
@@ -132,15 +118,12 @@ PROVIDER_LABELS: dict[str, str] = {
     "gemini": "google (gemini)",
     "ollama": "ollama (local)",
     "bedrock": "bedrock (AWS)",
-    "kimi": "kimi (moonshot)",
-    "glm": "glm (z.ai)",
-    "huggingface": "hugging face (router)",
+    "openrouter": "openrouter",
 }
 
 # Order the launch TUI lists providers in.
 PROVIDER_ORDER: tuple[str, ...] = (
-    "anthropic", "openai", "gemini", "ollama", "bedrock",
-    "kimi", "glm", "huggingface",
+    "anthropic", "openai", "gemini", "ollama", "bedrock", "openrouter",
 )
 
 
@@ -239,6 +222,8 @@ def _ollama_status(*, timeout_s: float = 1.0) -> ProviderStatus:
             "ollama", True,
             f"{host_disp} · {len(models)} model{'s' if len(models) != 1 else ''}",
             ollama_models=models)
+    if models is not None:  # the server answered but has nothing to run
+        return ProviderStatus("ollama", False, f"running at {host_disp} · no models pulled (ollama pull <model>)")
     return ProviderStatus("ollama", False, f"not running at {host_disp}")
 
 

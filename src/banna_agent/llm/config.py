@@ -11,16 +11,13 @@ Env var summary (see `.env.example`):
                                 ANTHROPIC_BEDROCK_BASE_URL for custom endpoints
     OPENAI_API_KEY             OpenAI; optional OPENAI_BASE_URL for proxies
     GOOGLE_API_KEY             Gemini (also used by tools/search.py)
+    OPENROUTER_API_KEY         OpenRouter (OpenAI-compatible; optional
+                                OPENROUTER_BASE_URL)
     OLLAMA_BASE_URL            Ollama local server (default http://localhost:11434)
-    MOONSHOT_API_KEY           Kimi / Moonshot (OpenAI-compatible)
-    ZAI_API_KEY / ZHIPU_API_KEY GLM / Z.ai / Zhipu (OpenAI-compatible)
-    HF_TOKEN                   Hugging Face router (OpenAI-compatible; hosts
-                                Inkling and many open-weights models)
 
-The last three providers are OpenAI wire-compatible, so they reuse the
-OpenAI adapter with a preset base_url and their own key. Each base_url is
-overridable via a `<PROVIDER>_BASE_URL` env var for proxies / regional
-endpoints (e.g. Moonshot's `.cn` domain).
+OpenRouter speaks the OpenAI wire format, so it reuses the OpenAI adapter
+with a preset base_url and its own key; OPENROUTER_BASE_URL overrides the
+base for proxies.
 """
 from __future__ import annotations
 
@@ -113,20 +110,14 @@ class OllamaConfig:
         )
 
 
-# OpenAI-compatible third-party providers: (canonical key vars, base_url
-# env var, default base_url). All three speak the OpenAI Chat Completions
-# wire format, so they reuse OpenAIConfig + OpenAIClient with a preset
-# base_url. The base is overridable via `<PROVIDER>_BASE_URL`.
+# OpenAI-compatible providers: (key vars, base_url env var, default
+# base_url). They speak the OpenAI Chat Completions wire format, so they
+# reuse OpenAIConfig + OpenAIClient with a preset base_url.
 _OPENAI_COMPAT: dict[str, tuple[tuple[str, ...], str, str]] = {
-    "kimi": (("MOONSHOT_API_KEY", "KIMI_API_KEY"),
-             "MOONSHOT_BASE_URL", "https://api.moonshot.ai/v1"),
-    "glm": (("ZAI_API_KEY", "ZHIPU_API_KEY", "GLM_API_KEY"),
-            "GLM_BASE_URL", "https://api.z.ai/api/paas/v4"),
-    # Hugging Face inference router: one token reaches many hosted
-    # open-weights models (incl. Thinking Machines' Inkling). The `:auto`
-    # model suffix lets HF pick an available inference provider.
-    "huggingface": (("HF_TOKEN", "HUGGINGFACE_API_KEY", "HUGGING_FACE_HUB_TOKEN"),
-                    "HF_BASE_URL", "https://router.huggingface.co/v1"),
+    # OpenRouter: one key reaches models from many vendors, ids are
+    # `vendor/model` (e.g. anthropic/claude-haiku-4.5).
+    "openrouter": (("OPENROUTER_API_KEY",),
+                   "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
 }
 
 

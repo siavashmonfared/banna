@@ -191,7 +191,7 @@ def _response_to_reply(resp: Any, model: str) -> LLMReply:
 # OpenAI itself, use the Responses API statelessly: store=False, ask for
 # encrypted reasoning, and send each prior reasoning item back with its
 # function call (block.raw carries the provider-native item).
-# OpenAI-compatible endpoints (OpenRouter, Kimi, GLM, HF router, ...) keep
+# OpenAI-compatible endpoints (OpenRouter, proxies, ...) keep
 # Chat Completions: their Responses support is absent or partial.
 # ---------------------------------------------------------------------------
 

@@ -93,8 +93,8 @@ def _ollama_factory(cfg: OllamaConfig, **kw: Any) -> LLMClient:
 
 def _openai_compat_factory(default_model: str) -> ClientFactory:
     """Build a factory for an OpenAI-wire-compatible third-party provider
-    (Kimi, GLM, Hugging Face router, …). `cfg` is an OpenAIConfig carrying
-    the vendor's key + preset base_url (see llm/config.py::_OPENAI_COMPAT)."""
+    (OpenRouter). `cfg` is an OpenAIConfig carrying the vendor's key +
+    preset base_url (see llm/config.py::_OPENAI_COMPAT)."""
     def factory(cfg: OpenAIConfig, **kw: Any) -> LLMClient:
         # `make_client` always passes model=... (None when unset), so a
         # dict default wouldn't fire — fall back with `or`.
@@ -114,11 +114,8 @@ _REGISTRY: dict[str, ClientFactory] = {
     "openai": _openai_factory,
     "gemini": _gemini_factory,
     "ollama": _ollama_factory,
-    # OpenAI-compatible third-party providers. Defaults are current flagship
-    # ids; users can pick any model the vendor serves via `/model`.
-    "kimi": _openai_compat_factory("kimi-k2.6"),
-    "glm": _openai_compat_factory("glm-4.6"),
-    "huggingface": _openai_compat_factory("thinkingmachines/Inkling"),
+    # OpenAI-compatible: any model OpenRouter serves, picked via `/model`.
+    "openrouter": _openai_compat_factory("anthropic/claude-haiku-4.5"),
 }
 
 

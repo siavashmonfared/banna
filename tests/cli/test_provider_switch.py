@@ -1,8 +1,8 @@
 """cmd_provider resets a stale model when switching providers.
 
-Regression: switching huggingface (model=thinkingmachines/Inkling) to
-anthropic used to keep the Inkling id, which 400s against the Anthropic
-API. The switch must drop a model the new provider doesn't serve.
+Regression: switching from an OpenAI-compatible provider to anthropic used
+to keep that provider's model id, which fails against the Anthropic API.
+The switch must drop a model the new provider doesn't serve.
 """
 from __future__ import annotations
 
@@ -29,25 +29,24 @@ class _App:
 @pytest.fixture(autouse=True)
 def _keys(monkeypatch):
     # _ensure_api_key must pass for the cloud providers under test.
-    for var in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "MOONSHOT_API_KEY",
-                "HF_TOKEN"):
+    for var in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"):
         monkeypatch.setenv(var, "test-key")
 
 
 def test_switch_drops_foreign_model():
-    app = _App("huggingface", "thinkingmachines/Inkling")
+    app = _App("openrouter", "anthropic/claude-haiku-4.5")
     C.cmd_provider(app, ["anthropic"])
     assert app.provider == "anthropic"
-    assert app.model != "thinkingmachines/Inkling"
+    assert app.model != "anthropic/claude-haiku-4.5"
     assert app.model in C.KNOWN_MODELS["anthropic"]
     assert app.rebuilt == 1
 
 
 def test_switch_to_openai_compat_provider_resets_model():
     app = _App("anthropic", "claude-opus-4-8")
-    C.cmd_provider(app, ["kimi"])
-    assert app.provider == "kimi"
-    assert app.model in C.KNOWN_MODELS["kimi"]
+    C.cmd_provider(app, ["openrouter"])
+    assert app.provider == "openrouter"
+    assert app.model in C.KNOWN_MODELS["openrouter"]
 
 
 def test_switch_keeps_valid_model():

@@ -44,7 +44,7 @@ Every launch of `banna` opens a session-setup dashboard (Textual TUI), pre-fille
   ↑↓ move · ←/→ toggle · ↵ edit · s start · d save as default & start · q quit
 ```
 
-API keys are searched in your shell env, `./.env`, and `~/.config/banna/.env`; if a provider has no key you can paste one right there (validated with a 1-token call, saved mode 0600) or switch to a local Ollama model. Model pickers list correct, current model ids per provider; Ollama models are listed live and probed for tool-calling support. Numeric fields (budget, temperature) step with ↑/↓ or take typed values.
+Providers: Anthropic (`ANTHROPIC_API_KEY`), Amazon Bedrock (`AWS_REGION` / `AWS_PROFILE`), OpenAI (`OPENAI_API_KEY`), Google Gemini (`GOOGLE_API_KEY` or `GEMINI_API_KEY`), OpenRouter (`OPENROUTER_API_KEY`, models as `vendor/model`) and local Ollama (no key). API keys are searched in your shell env, `./.env`, and `~/.config/banna/.env`; if a provider has no key you can paste one right there (validated with a 1-token call, saved mode 0600) or switch to a local Ollama model. Model pickers list correct, current model ids per provider; Ollama models are listed live and probed for tool-calling support. Numeric fields (budget, temperature) step with ↑/↓ or take typed values.
 
 ```bash
 banna                 # launch — dashboard first, then the REPL
@@ -59,7 +59,7 @@ banna --policy react --provider openai --model gpt-5-nano
 ```
 $ banna --policy react --provider openai --model gpt-5-nano
 
-● banna · v0.5.1   provider=openai   model=gpt-5-nano   policy=react
+● banna · v0.6.0   provider=openai   model=gpt-5-nano   policy=react
 
 > How many studio albums did Mercedes Sosa release between 2000 and 2009?
 
@@ -243,7 +243,7 @@ Does intrinsic self-verification help? It depends on the model. This 2×2 crosse
 ```
 src/banna_agent/
 ├── core/          AgentState, Trace, Action, Budget, EventLog, run_policy
-├── llm/           provider-agnostic LLMClient + adapters (anthropic, openai, gemini, ollama, bedrock)
+├── llm/           provider-agnostic LLMClient + adapters (anthropic, bedrock, openai, gemini, openrouter, ollama)
 ├── tools/         search, read_url, read_file, pdf/xlsx, python_sandbox,
 │                  calculator, run_shell, grep, list_files, plan, memory, final_answer
 │   └── mcp/       MCP client (stdio + HTTP/SSE) + JsonTool bridge
@@ -261,7 +261,7 @@ Tests mirror `src/` under `tests/`. Run them with:
 pytest -q
 ```
 
-Current status on this branch: **977 passed, 4 skipped** (skips require the optional `chromadb` backend, `tiktoken`, or real API keys).
+Current status on this branch: **983 passed, 4 skipped** (skips require the optional `chromadb` backend, `tiktoken`, or real API keys).
 
 ## Limitations
 

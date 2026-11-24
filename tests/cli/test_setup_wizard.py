@@ -222,13 +222,14 @@ def test_providers_lists_each_provider(
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     config_store.write_env({"OPENAI_API_KEY": "sk-test"})
-    with patch("banna_agent.cli.subcommands.requests.get",
-               side_effect=Exception("nope")):
+    with patch("banna_agent.cli.model_catalog.detect_ollama", return_value=None):
         subcommands.dispatch(["providers"])
     out = capsys.readouterr().out
-    assert "openai" in out
-    assert "anthropic" in out
-    assert "gemini" in out
-    assert "ollama" in out
+    for name in ("anthropic", "bedrock", "openai", "gemini", "openrouter", "ollama"):
+        assert name in out
+    assert "key OPENAI_API_KEY" in out  # found in the .env file
     assert "(no key)" in out  # anthropic+gemini should be unset
+    assert "not running" in out

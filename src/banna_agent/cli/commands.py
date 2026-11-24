@@ -58,9 +58,7 @@ KNOWN_MODELS: dict[str, tuple[str, ...]] = {
 # is the full accepted-vars map; this keeps the canonical var only.)
 PROVIDER_API_KEY_ENV: dict[str, str] = {
     "openai": "OPENAI_API_KEY",
-    "kimi": "MOONSHOT_API_KEY",
-    "glm": "ZAI_API_KEY",
-    "huggingface": "HF_TOKEN",
+    "openrouter": "OPENROUTER_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
     "gemini": "GOOGLE_API_KEY",
 }
@@ -510,8 +508,8 @@ def cmd_provider(app: Any, args: list[str]) -> bool:
     app.provider = new
     # Reset the model to the new provider's default when the current one
     # isn't a model that provider serves — otherwise a stale id carries
-    # over (e.g. huggingface's "thinkingmachines/Inkling" into anthropic,
-    # which 400s). Mirrors the launch TUI's provider-switch behavior.
+    # over (e.g. openrouter's "anthropic/claude-haiku-4.5" into anthropic,
+    # which 404s). Mirrors the launch TUI's provider-switch behavior.
     if new == "ollama":
         known = _ollama_models(app)
     else:

@@ -8,18 +8,16 @@ from __future__ import annotations
 import sys
 from typing import Sequence
 
-import requests
 
 from .config_store import (
     config_toml_path,
-    env_path,
     read_config,
     read_env,
     read_package_allowlist,
     write_config,
     write_package_allowlist,
 )
-from .setup_wizard import _PROVIDER_KEY_VAR, _VALIDATORS, run_wizard
+from .setup_wizard import _VALIDATORS, run_wizard
 
 
 SUBCOMMANDS = ("init", "config", "providers", "trace")
@@ -305,39 +303,28 @@ def _cmd_config_mcp(args: list[str]) -> int:
 
 
 def _cmd_providers(args: list[str]) -> int:
-    """`banna providers` — show which providers have a key and whether it works."""
+    """`banna providers` — every provider banna supports, whether it is set up, and (with --validate)
+    whether its key works. Same scan as the launch TUI (model_catalog.scan_providers)."""
     import os
+
+    from .model_catalog import PROVIDER_ORDER, scan_providers
+
     env_file = read_env()
-
-    rows = []
-    for provider, var in _PROVIDER_KEY_VAR.items():
-        # Key may live in shell env OR our .env file.
-        src = None
-        if os.environ.get(var):
-            src = "shell"
-        elif env_file.get(var):
-            src = str(env_path())
-        rows.append((provider, var, src))
-
-    # Ollama is special — no key, just a server check.
-    try:
-        r = requests.get("http://localhost:11434/api/tags", timeout=1.0)
-        ollama_status = "up" if r.status_code == 200 else "responding but not 200"
-    except Exception:
-        ollama_status = "not detected"
-
-    width = max(len(p) for p, _, _ in rows) + 2
+    statuses = scan_providers()
+    width = max(len(p) for p in PROVIDER_ORDER) + 2
     print()
-    for provider, var, src in rows:
-        if src is None:
+    for provider in PROVIDER_ORDER:
+        st = statuses[provider]
+        if provider in ("ollama", "bedrock"):  # no API key: a server check / AWS settings
+            status = ("✓ " if st.ok else "✗ ") + st.detail
+        elif not st.ok:
             status = "(no key)"
         else:
-            status = f"key from {src}"
-            if "--validate" in args:
-                ok, err = _VALIDATORS[provider]((os.environ.get(var) or env_file.get(var)) or "")
+            status = f"key {st.detail} from {st.source}"
+            if "--validate" in args and provider in _VALIDATORS:
+                ok, err = _VALIDATORS[provider]((os.environ.get(st.detail) or env_file.get(st.detail)) or "")
                 status += "  ✓ live" if ok else f"  ✗ {err[:60]}"
         print(f"  {provider:<{width}} {status}")
-    print(f"  {'ollama':<{width}} {ollama_status}")
     print()
-    print("hint: pass --validate to make a 1-token test call against each cloud provider")
+    print("hint: pass --validate to check each configured key with a live call")
     return 0

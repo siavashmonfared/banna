@@ -36,6 +36,7 @@ _PROVIDER_KEY_VAR: dict[str, str] = {
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
     "gemini": "GEMINI_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
 }
 
 
@@ -118,10 +119,28 @@ def _validate_gemini_key(api_key: str) -> tuple[bool, str]:
         return False, f"{type(exc).__name__}: {exc}"
 
 
+def _validate_openrouter_key(api_key: str) -> tuple[bool, str]:
+    """OpenRouter's key endpoint checks the key without spending tokens."""
+    import json
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request("https://openrouter.ai/api/v1/key",
+                                 headers={"Authorization": f"Bearer {api_key}"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            json.loads(resp.read() or b"{}")
+        return True, ""
+    except urllib.error.HTTPError as exc:
+        return False, f"HTTP {exc.code}: {exc.reason}"
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+
+
 _VALIDATORS = {
     "openai": _validate_openai_key,
     "anthropic": _validate_anthropic_key,
     "gemini": _validate_gemini_key,
+    "openrouter": _validate_openrouter_key,
 }
 
 
@@ -291,6 +310,7 @@ def run_wizard() -> WizardResult:
         ("openai", "OpenAI       (cloud, paid)"),
         ("anthropic", "Anthropic    (cloud, paid)"),
         ("gemini", "Gemini       (cloud, free tier)"),
+        ("openrouter", "OpenRouter   (cloud, models from many vendors)"),
     ])
     if not ollama_models:
         options.append(("ollama", "Ollama       (local, not detected at :11434)"))
