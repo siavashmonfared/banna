@@ -20,6 +20,7 @@ Things that are easy to get wrong (from collab thread Q3):
 """
 from __future__ import annotations
 
+import copy
 import os
 from dataclasses import dataclass, field
 from typing import Any, Sequence
@@ -151,6 +152,73 @@ def _message_to_anthropic(msg: Message) -> dict[str, Any]:
         role = "user"
     content = [_block_to_anthropic(b) for b in msg.content]
     return {"role": role, "content": content}
+
+
+_MAX_CACHE_BREAKPOINTS = 4
+_NOT_CACHEABLE = {"thinking", "redacted_thinking"}
+
+
+def _count_breakpoints(value: Any) -> int:
+    if isinstance(value, dict):
+        return ("cache_control" in value) + sum(_count_breakpoints(v) for v in value.values())
+    if isinstance(value, list):
+        return sum(_count_breakpoints(v) for v in value)
+    return 0
+
+
+def _mark_message(message: dict[str, Any]) -> bool:
+    """Put cache_control on the last cacheable block of `message` (in place)."""
+    content = message.get("content")
+    if isinstance(content, str):
+        message["content"] = content = [{"type": "text", "text": content}]
+    if not isinstance(content, list):
+        return False
+    for i in range(len(content) - 1, -1, -1):
+        block = content[i]
+        if isinstance(block, dict) and block.get("type") not in _NOT_CACHEABLE:
+            if "cache_control" not in block:
+                content[i] = {**block, "cache_control": {"type": "ephemeral"}}
+            return True
+    return False
+
+
+def _has_tool_result(message: dict[str, Any]) -> bool:
+    content = message.get("content")
+    return isinstance(content, list) and any(
+        isinstance(b, dict) and b.get("type") == "tool_result" for b in content)
+
+
+def _add_conversation_breakpoints(messages: list[dict[str, Any]], used: int) -> None:
+    """Cache the growing conversation, not only tools+system.
+
+    The system-only breakpoint is often below the model's minimum cacheable
+    prefix, and it never covers the conversation, so every step re-processed
+    the whole history uncached. Two breakpoints fix that:
+
+    * newest: the last message. When history is replayed verbatim
+      (project_history=False) the next request extends this prefix unchanged.
+    * stable: the message before the newest tool result (the assistant
+      tool_use turn). With history projection (the default) the newest tool
+      result is shortened on the next step, so the newest breakpoint is not
+      reusable; this message, however, is replayed byte-for-byte, and the next
+      request's own stable breakpoint sits a few blocks later, within the
+      API's 20-block lookback, so it reads this prefix from cache.
+
+    Operates on serialized dicts only; caller Message objects are untouched.
+    Thinking blocks cannot carry cache_control. At most 4 breakpoints total.
+    """
+    if not messages:
+        return
+    budget = _MAX_CACHE_BREAKPOINTS - used
+    if budget <= 0:
+        return
+    if _mark_message(messages[-1]):
+        budget -= 1
+    if budget <= 0:
+        return
+    last_result = next((i for i in range(len(messages) - 1, -1, -1) if _has_tool_result(messages[i])), None)
+    if last_result is not None and 0 <= last_result - 1 < len(messages) - 1:
+        _mark_message(messages[last_result - 1])
 
 
 def _toolspec_to_anthropic(spec: ToolSpec) -> dict[str, Any]:
@@ -413,6 +481,10 @@ class AnthropicClient:
             kwargs["tools"] = [_toolspec_to_anthropic(t) for t in tools]
         if extra:
             kwargs.update(extra)
+        if self.prompt_cache:
+            kwargs["messages"] = copy.deepcopy(kwargs["messages"])
+            used = _count_breakpoints([kwargs.get("system"), kwargs.get("tools"), kwargs["messages"]])
+            _add_conversation_breakpoints(kwargs["messages"], used)
 
         try:
             resp = client.messages.create(**kwargs)

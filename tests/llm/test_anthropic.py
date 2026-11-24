@@ -102,8 +102,11 @@ def test_request_plain_text_message() -> None:
     assert k["model"] == "claude-opus-4-5-20251101"
     assert k["max_tokens"] == 50
     assert k["temperature"] == 0.0
+    # prompt_cache (default) marks the newest message as a cache breakpoint.
     assert k["messages"] == [
-        {"role": "user", "content": [{"type": "text", "text": "hi"}]}
+        {"role": "user", "content": [
+            {"type": "text", "text": "hi", "cache_control": {"type": "ephemeral"}},
+        ]}
     ]
     assert "system" not in k
     assert "tools" not in k
@@ -182,9 +185,10 @@ def test_request_tool_spec_flows_through() -> None:
 def test_request_tool_use_and_tool_result_round_trip() -> None:
     """The hardest serialization case: a 3-turn conversation where the
     assistant called a tool, the user replied with a tool_result, and we
-    send the whole history back for the next turn."""
+    send the whole history back for the next turn. prompt_cache=False keeps
+    this a pure serialization check (breakpoints are tested separately)."""
     sdk = _FakeSDK(fake_response=_basic_response("final answer"))
-    client = AnthropicClient(sdk=sdk)
+    client = AnthropicClient(sdk=sdk, prompt_cache=False)
 
     history = [
         Message(role="user", content=[ContentBlock(kind="text", text="search netflix")]),
