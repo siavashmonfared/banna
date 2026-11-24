@@ -183,6 +183,125 @@ def _response_to_reply(resp: Any, model: str) -> LLMReply:
 
 
 # ---------------------------------------------------------------------------
+# Responses API (reasoning models with function tools)
+#
+# Chat Completions rejects function tools combined with `reasoning_effort`
+# for current reasoning models ("use /v1/responses or set reasoning_effort to
+# 'none'"). When a reasoning control is configured and the client talks to
+# OpenAI itself, use the Responses API statelessly: store=False, ask for
+# encrypted reasoning, and send each prior reasoning item back with its
+# function call (block.raw carries the provider-native item).
+# OpenAI-compatible endpoints (OpenRouter, Kimi, GLM, HF router, ...) keep
+# Chat Completions: their Responses support is absent or partial.
+# ---------------------------------------------------------------------------
+
+REASONING_CONTROLS = ("reasoning", "reasoning_effort")
+OPENAI_HOSTS = ("api.openai.com",)
+
+
+def _is_openai_endpoint(base_url: str | None) -> bool:
+    """True when requests go to OpenAI itself (no base_url, or an OpenAI host)."""
+    if not base_url:
+        return True
+    from urllib.parse import urlparse
+    host = (urlparse(base_url).hostname or "").lower()
+    return host in OPENAI_HOSTS
+
+# Deterministic request errors: the same request fails the same way again.
+_NON_RETRYABLE_STATUS = {400, 401, 403, 404, 422}
+
+
+def _non_retryable(exc: Exception):
+    from .base import ProviderError
+    status = getattr(exc, "status_code", None)
+    if status in _NON_RETRYABLE_STATUS:
+        return ProviderError(f"{type(exc).__name__}: {exc}", retryable=False)
+    return None
+
+
+def _text_of(result: Any) -> str:
+    return result if isinstance(result, str) else json.dumps(result, default=str)
+
+
+def _messages_to_responses(messages: Sequence[Message]) -> list[dict[str, Any]]:
+    """Normalized history -> Responses `input` items, preserving block order."""
+    items: list[dict[str, Any]] = []
+    for msg in messages:
+        if msg.role == "system":
+            continue  # sent as `instructions`
+        if msg.role == "assistant":
+            for b in msg.content:
+                if b.kind == "reasoning":
+                    raw = b.raw if isinstance(b.raw, dict) else {}
+                    if raw.get("encrypted_content"):
+                        items.append({"type": "reasoning", "summary": raw.get("summary") or [],
+                                      "encrypted_content": raw["encrypted_content"]})
+                elif b.kind == "text" and b.text:
+                    items.append({"role": "assistant", "content": b.text})
+                elif b.kind == "tool_use":
+                    items.append({"type": "function_call", "call_id": b.id or "", "name": b.name or "",
+                                  "arguments": json.dumps(b.arguments, default=str)})
+            continue
+        for b in msg.content:
+            if b.kind == "text" and b.text:
+                items.append({"role": "user", "content": b.text})
+            elif b.kind == "tool_result":
+                items.append({"type": "function_call_output", "call_id": b.id or "",
+                              "output": _text_of(b.result)})
+    return items
+
+
+def _toolspec_to_responses(spec: ToolSpec) -> dict[str, Any]:
+    # strict=False keeps Banna's existing (non-strict) tool schemas valid.
+    return {"type": "function", "name": spec.name, "description": spec.description,
+            "parameters": spec.input_schema, "strict": False}
+
+
+def _plain(obj: Any) -> Any:
+    if hasattr(obj, "model_dump"):
+        return obj.model_dump(mode="json", exclude_none=True)
+    return obj
+
+
+def _responses_to_reply(resp: Any, model: str) -> LLMReply:
+    data = _plain(resp) or {}
+    blocks: list[ContentBlock] = []
+    for item in data.get("output") or []:
+        kind = item.get("type")
+        if kind == "reasoning":
+            summary = "".join(s.get("text", "") for s in item.get("summary") or [])
+            blocks.append(ContentBlock(kind="reasoning", text=summary, raw=item))
+        elif kind == "message":
+            for part in item.get("content") or []:
+                if part.get("type") == "output_text" and part.get("text"):
+                    blocks.append(ContentBlock(kind="text", text=part["text"], raw=part))
+        elif kind == "function_call":
+            try:
+                args = json.loads(item.get("arguments") or "{}")
+            except (ValueError, TypeError):
+                args = {"_raw": item.get("arguments")}
+            blocks.append(ContentBlock(kind="tool_use", id=item.get("call_id") or "",
+                                       name=item.get("name") or "", arguments=args, raw=item))
+        else:
+            blocks.append(ContentBlock(kind="unknown", raw=item))
+    if any(b.kind == "tool_use" for b in blocks):
+        stop_reason = "tool_use"
+    elif data.get("status") == "incomplete":
+        reason = (data.get("incomplete_details") or {}).get("reason")
+        stop_reason = "max_tokens" if reason == "max_output_tokens" else (reason or "incomplete")
+    else:
+        stop_reason = "end_turn"
+    u = data.get("usage") or {}
+    tokens_in, tokens_out = int(u.get("input_tokens") or 0), int(u.get("output_tokens") or 0)
+    usage = Usage(tokens_in=tokens_in, tokens_out=tokens_out, total_tokens=tokens_in + tokens_out,
+                  cache_read_tokens=int((u.get("input_tokens_details") or {}).get("cached_tokens") or 0),
+                  reasoning_tokens=int((u.get("output_tokens_details") or {}).get("reasoning_tokens") or 0),
+                  raw=u or None)
+    return LLMReply(provider="openai", model=data.get("model") or model, content=blocks,
+                    stop_reason=stop_reason, usage=usage, raw=resp)
+
+
+# ---------------------------------------------------------------------------
 # Model-shape predicates
 #
 # OpenAI changed the request schema across model generations:
@@ -281,6 +400,11 @@ class OpenAIClient:
         self.sdk = openai.OpenAI(**kwargs)
         return self.sdk
 
+    def _uses_responses_api(self, extra: dict[str, Any] | None) -> bool:
+        if not any(key in (extra or {}) for key in REASONING_CONTROLS):
+            return False
+        return _is_openai_endpoint(self.base_url or os.environ.get("OPENAI_BASE_URL"))
+
     def chat(
         self,
         *,
@@ -295,6 +419,10 @@ class OpenAIClient:
         client = self._client()
         model_id = model or self.model
         sys_prompt = system if system is not None else self.system_default
+        if self._uses_responses_api(extra):
+            return self._responses(client, messages=messages, tools=tools, model_id=model_id,
+                                   max_tokens=max_tokens, temperature=temperature,
+                                   sys_prompt=sys_prompt, extra=dict(extra or {}))
 
         openai_msgs = _messages_to_openai(messages)
         if sys_prompt and not any(m["role"] == "system" for m in openai_msgs):
@@ -326,5 +454,42 @@ class OpenAIClient:
         if extra:
             kwargs.update(extra)
 
-        resp = client.chat.completions.create(**kwargs)
+        try:
+            resp = client.chat.completions.create(**kwargs)
+        except Exception as exc:
+            mapped = _non_retryable(exc)
+            if mapped is not None:
+                raise mapped from exc
+            raise
         return _response_to_reply(resp, model_id)
+
+    def _responses(self, client: Any, *, messages, tools, model_id, max_tokens, temperature,
+                   sys_prompt, extra) -> LLMReply:
+        effort = extra.pop("reasoning_effort", None)
+        reasoning = dict(extra.pop("reasoning", None) or {})
+        if effort is not None:
+            reasoning.setdefault("effort", effort)
+        include = list(extra.pop("include", None) or [])
+        if "reasoning.encrypted_content" not in include:
+            include.append("reasoning.encrypted_content")
+        system_texts = [b.text or "" for m in messages if m.role == "system" for b in m.content if b.kind == "text"]
+        instructions = sys_prompt or ("".join(system_texts) or None)
+        kwargs: dict[str, Any] = {"model": model_id, "input": _messages_to_responses(messages),
+                                  "reasoning": reasoning, "store": False, "include": include}
+        if instructions:
+            kwargs["instructions"] = instructions
+        if max_tokens is not None:
+            kwargs["max_output_tokens"] = _floor_for_reasoning(model_id, max_tokens)
+        if temperature is not None and not _rejects_custom_temperature(model_id):
+            kwargs["temperature"] = temperature
+        if tools:
+            kwargs["tools"] = [_toolspec_to_responses(t) for t in tools]
+        kwargs.update(extra)
+        try:
+            resp = client.responses.create(**kwargs)
+        except Exception as exc:
+            mapped = _non_retryable(exc)
+            if mapped is not None:
+                raise mapped from exc
+            raise
+        return _responses_to_reply(resp, model_id)

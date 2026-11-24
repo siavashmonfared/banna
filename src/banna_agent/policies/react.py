@@ -345,6 +345,36 @@ def _enumerable_targets(question: str) -> dict[str, Any]:
     return {"years": years, "count": count}
 
 
+# --- provider-native replay data --------------------------------------------
+
+def _thought_signature(call: Any) -> str | None:
+    """Gemini attaches thoughtSignature to the functionCall part (call.raw)."""
+    raw = getattr(call, "raw", None)
+    return raw.get("thoughtSignature") if isinstance(raw, dict) else None
+
+
+def _reasoning_items(reply: Any) -> list[dict[str, Any]]:
+    """OpenAI Responses reasoning items (encrypted) that precede the calls."""
+    return [b.raw for b in reply.content
+            if b.kind == "reasoning" and isinstance(b.raw, dict) and b.raw.get("encrypted_content")]
+
+
+def _reasoning_blocks(meta: dict[str, Any]) -> list[ContentBlock]:
+    return [ContentBlock(kind="reasoning", text="", raw=item) for item in meta.get("reasoning_items") or []]
+
+
+def _replay_id(meta: dict[str, Any], native: str | None, fallback: str) -> str:
+    # OpenAI pairs function_call / function_call_output by call_id; keep the
+    # provider's own ID so replayed reasoning matches its call. Other
+    # providers keep Banna's original step IDs (unchanged behavior).
+    return native if native and meta.get("provider") == "openai" else fallback
+
+
+def _tool_use_block(call_id: str, name: str, args: dict[str, Any], signature: str | None) -> ContentBlock:
+    raw = {"functionCall": {"name": name, "args": args}, "thoughtSignature": signature} if signature else None
+    return ContentBlock(kind="tool_use", id=call_id, name=name, arguments=args, raw=raw)
+
+
 @dataclass
 class ReActPolicy:
     """The baseline ReAct Policy. Provider-agnostic.
@@ -357,6 +387,12 @@ class ReActPolicy:
       temperature        - per-call temperature
     """
 
+    # Actions carry the provider's own tool-call id in meta.native_tool_call_id
+    # (tracing/eval tooling can rely on it). Provider-native data that must
+    # accompany a replayed call is kept too: Gemini 3 rejects replayed function
+    # calls without their thoughtSignature; OpenAI reasoning models expect each
+    # reasoning item before its call.
+    native_tool_call_ids = True
     name: str = "react"
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
     model: str | None = None
@@ -462,16 +498,14 @@ class ReActPolicy:
                 # thought text alongside the tool call (captured in
                 # meta.preceding_text), include it as a text block so the
                 # model's reasoning is part of the conversation history.
-                preceding = (act.meta or {}).get("preceding_text") or ""
-                blocks: list[ContentBlock] = []
+                meta = act.meta or {}
+                preceding = meta.get("preceding_text") or ""
+                call_id = _replay_id(meta, meta.get("native_tool_call_id"), f"step_{step.idx}")
+                blocks: list[ContentBlock] = _reasoning_blocks(meta)
                 if preceding.strip():
                     blocks.append(ContentBlock(kind="text", text=preceding))
-                blocks.append(ContentBlock(
-                    kind="tool_use",
-                    id=f"step_{step.idx}",
-                    name=act.tool_name or "",
-                    arguments=dict(act.tool_args),
-                ))
+                blocks.append(_tool_use_block(call_id, act.tool_name or "", dict(act.tool_args),
+                                              meta.get("thought_signature")))
                 msgs.append(Message(role="assistant", content=blocks))
                 # user's tool_result turn
                 if obs.ok:
@@ -486,7 +520,7 @@ class ReActPolicy:
                     role="user",
                     content=[ContentBlock(
                         kind="tool_result",
-                        id=f"step_{step.idx}",
+                        id=call_id,
                         name=act.tool_name or "",
                         result=payload,
                         is_error=not obs.ok,
@@ -507,7 +541,7 @@ class ReActPolicy:
                 n = max(len(batch_calls), len(summary))
                 project = self.project_history and step.idx != last_tool_idx
 
-                use_blocks: list[ContentBlock] = []
+                use_blocks: list[ContentBlock] = _reasoning_blocks(meta)
                 preceding = meta.get("preceding_text") or ""
                 if preceding.strip():
                     use_blocks.append(ContentBlock(kind="text", text=preceding))
@@ -516,13 +550,9 @@ class ReActPolicy:
                     bc = batch_calls[i] if i < len(batch_calls) else {}
                     sub = summary[i] if i < len(summary) else {}
                     name = bc.get("name") or sub.get("name") or ""
-                    tu_id = f"step_{step.idx}_{i}"
-                    use_blocks.append(ContentBlock(
-                        kind="tool_use",
-                        id=tu_id,
-                        name=name,
-                        arguments=dict(bc.get("args") or {}),
-                    ))
+                    tu_id = _replay_id(meta, bc.get("native_tool_call_id"), f"step_{step.idx}_{i}")
+                    use_blocks.append(_tool_use_block(tu_id, name, dict(bc.get("args") or {}),
+                                                      bc.get("thought_signature")))
                     ok = bool(sub.get("ok", True))
                     if ok:
                         payload = sub.get("result")
@@ -847,7 +877,8 @@ class ReActPolicy:
                     if key in seen:
                         continue
                     seen.add(key)
-                    batch.append({"name": c.name, "args": args})
+                    batch.append({"name": c.name, "args": args, "native_tool_call_id": c.id,
+                                  "thought_signature": _thought_signature(c)})
                     if len(batch) >= 5:
                         break
                 if len(batch) >= 2:
@@ -861,6 +892,7 @@ class ReActPolicy:
                             "tokens_in": reply.usage.tokens_in,
                             "tokens_out": reply.usage.tokens_out,
                             "preceding_text": preceding_text,
+                            "reasoning_items": _reasoning_items(reply),
                             "batch_calls": batch,
                             "batch_names": [c["name"] for c in batch],
                         },
@@ -914,6 +946,7 @@ class ReActPolicy:
                         "tokens_in": reply.usage.tokens_in,
                         "tokens_out": reply.usage.tokens_out,
                         "via_final_answer_tool": True,
+                        "native_tool_call_id": call.id,
                         "preceding_text": preceding_text,
                         "evidence_ids": evidence_ids,
                     },
@@ -923,6 +956,9 @@ class ReActPolicy:
                 tool_name=call.name,
                 tool_args=dict(call.arguments),
                 meta={
+                    "native_tool_call_id": call.id,
+                    "thought_signature": _thought_signature(call),
+                    "reasoning_items": _reasoning_items(reply),
                     "policy": self.name,
                     "provider": reply.provider,
                     "model": reply.model,

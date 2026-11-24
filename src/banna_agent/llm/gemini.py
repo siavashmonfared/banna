@@ -148,6 +148,10 @@ def _toolspec_to_gemini(specs: Sequence[ToolSpec]) -> list[dict[str, Any]]:
 
 
 def _part_to_block(part: dict[str, Any]) -> ContentBlock:
+    # Thought summaries also carry "text"; check `thought` first so they are
+    # not replayed to the model as its own visible answer text.
+    if part.get("thought"):
+        return ContentBlock(kind="thinking", text=part.get("text", ""), raw=part)
     if "text" in part:
         return ContentBlock(kind="text", text=part["text"], raw=part)
     if "functionCall" in part:
@@ -289,8 +293,11 @@ class GeminiClient:
                 err_body = None
             err_text = (err_body.get("error", {}).get("message") if isinstance(err_body, dict) else "")
             err_text = err_text or (resp.text if hasattr(resp, "text") else "")
-            raise RuntimeError(
-                f"gemini {status} for model={model_id!r}: {err_text or '(no body)'}"
-            )
+            message = f"gemini {status} for model={model_id!r}: {err_text or '(no body)'}"
+            if status in (400, 401, 403, 404, 422):
+                # Deterministic: an identical retry fails identically.
+                from .base import ProviderError
+                raise ProviderError(message, retryable=False)
+            raise RuntimeError(message)
         data = resp.json() if hasattr(resp, "json") else resp
         return _response_to_reply(data, model_id)
